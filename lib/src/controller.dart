@@ -259,6 +259,17 @@ class ClipController extends ChangeNotifier {
     changed();
   }
 
+  Future<void> pin(Uint8List bytes, ui.Rect rect, {required bool animate}) =>
+      perform(() async {
+        await bridge.pin(bytes, {
+          'x': rect.left,
+          'y': rect.top,
+          'width': rect.width,
+          'height': rect.height,
+        }, animate);
+        await discard();
+      });
+
   Future<void> finish(
     Uint8List bytes, {
     required bool save,

@@ -1,4 +1,4 @@
-﻿#define AppVersion "1.0.0"
+﻿#define AppVersion "1.1.0"
 [Setup]
 AppId={{E02AFC24-63BD-4C11-93AC-83D643717E92}
 AppName=定格T

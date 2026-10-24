@@ -198,6 +198,26 @@ void main() {
             .writeAsBytes(data!.buffer.asUint8List());
         image.dispose();
       });
+      await tester.tap(find.byTooltip('调整选区 · V'));
+      await tester.pumpAndSettle();
+      for (final entry in [('圆形框选', 'circle'), ('椭圆框选', 'ellipse')]) {
+        await tester.tap(find.byTooltip(entry.$1));
+        await tester.pumpAndSettle();
+        await tester.runAsync(() async {
+          final boundary =
+              key.currentContext!.findRenderObject()! as RenderRepaintBoundary;
+          final image = await boundary.toImage();
+          final data = await image.toByteData(format: ui.ImageByteFormat.png);
+          await File(
+            '${output.path}/${entry.$2}-${dark ? 'dark' : 'light'}.png',
+          ).writeAsBytes(data!.buffer.asUint8List());
+          image.dispose();
+        });
+        await tester.tap(find.byTooltip('撤销'));
+        await tester.pumpAndSettle();
+      }
+      await tester.tap(find.byTooltip('矩形框选'));
+      await tester.pumpAndSettle();
       await tester.tap(find.byTooltip('文字 · T'));
       await tester.pump();
       await tester.tapAt(const Offset(340, 440));

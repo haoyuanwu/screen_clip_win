@@ -128,8 +128,12 @@ class _ToolButtonState extends State<ToolButton> {
                   minHeight: widget.size,
                 ),
                 padding: EdgeInsets.symmetric(
-                  horizontal: widget.child == null ? 5 : 7,
-                  vertical: 5,
+                  horizontal: widget.size < 30
+                      ? 4
+                      : widget.child == null
+                      ? 5
+                      : 7,
+                  vertical: widget.size < 30 ? 4 : 5,
                 ),
                 decoration: BoxDecoration(
                   color: widget.primary
@@ -150,7 +154,7 @@ class _ToolButtonState extends State<ToolButton> {
                   opacity: widget.onPressed == null ? .3 : 1,
                   child: IconTheme(
                     data: IconThemeData(
-                      size: 18,
+                      size: widget.size < 30 ? 16 : 18,
                       color: widget.primary
                           ? c.onPrimary
                           : widget.selected

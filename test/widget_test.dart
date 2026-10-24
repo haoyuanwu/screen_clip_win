@@ -33,7 +33,22 @@ class FakeBridge extends DesktopBridge {
   }
 
   String? savePath;
-  Uint8List? copied;
+  Uint8List? copied, pinned;
+  Map<String, double>? pinnedRect;
+  bool? pinnedAnimate;
+  bool failPin = false;
+  @override
+  Future<void> pin(
+    Uint8List bytes,
+    Map<String, double> rect,
+    bool animate,
+  ) async {
+    if (failPin) throw PlatformException(code: 'pin', message: '图钉创建失败');
+    pinned = bytes;
+    pinnedRect = rect;
+    pinnedAnimate = animate;
+  }
+
   @override
   Future<String> dataDirectory() async => directory;
   @override
@@ -105,6 +120,136 @@ void main() {
       }
     },
   );
+  test('Ellipse and circle export transparent corners with original source dimensions', () async {
+    final image = await sample(width: 100, height: 80);
+    try {
+      for (final shape in [SelectionShape.circle, SelectionShape.ellipse]) {
+        final rect = constrainSelectionShape(
+          const Rect.fromLTWH(10, 10, 80, 60),
+          shape,
+        );
+        if (shape == SelectionShape.circle) expect(rect.width, rect.height);
+        final png = await renderCapture(image, [], rect, shape: shape);
+        final codec = await ui.instantiateImageCodec(png);
+        final frame = await codec.getNextFrame();
+        codec.dispose();
+        final pixels = (await frame.image.toByteData())!;
+        expect(frame.image.width, rect.width.toInt());
+        expect(frame.image.height, rect.height.toInt());
+        expect(pixels.getUint8(3), 0);
+        final center =
+            ((frame.image.height ~/ 2) * frame.image.width +
+                frame.image.width ~/ 2) *
+            4;
+        expect(pixels.getUint8(center + 3), 255);
+        frame.image.dispose();
+      }
+    } finally {
+      image.dispose();
+    }
+  });
+  test('Pin preserves clipboard, supports reduced motion and retains failed session', () async {
+    final bridge = FakeBridge('unused');
+    final controller = ClipController(bridge: bridge)..ready = true;
+    final image = await sample();
+    final bytes = (await image.toByteData(format: ui.ImageByteFormat.png))!
+        .buffer
+        .asUint8List();
+    image.dispose();
+    try {
+      await controller.loadBytes(bytes);
+      bridge.failPin = true;
+      await controller.pin(
+        bytes,
+        const Rect.fromLTWH(2, 3, 20, 15),
+        animate: true,
+      );
+      expect(controller.clip, isNotNull);
+      expect(controller.error, '图钉创建失败');
+      bridge.failPin = false;
+      await controller.pin(
+        bytes,
+        const Rect.fromLTWH(2, 3, 20, 15),
+        animate: false,
+      );
+      expect(bridge.pinned, bytes);
+      expect(bridge.pinnedRect, {
+        'x': 2.0,
+        'y': 3.0,
+        'width': 20.0,
+        'height': 15.0,
+      });
+      expect(bridge.pinnedAnimate, isFalse);
+      expect(bridge.copied, isNull);
+      expect(controller.clip, isNull);
+      expect(bridge.hidden, isTrue);
+    } finally {
+      controller.dispose();
+    }
+  });
+  testWidgets('Shape switch, circle resize and undo lead to a shaped pin', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1024, 768);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final bridge = FakeBridge('unused');
+    final controller = ClipController(bridge: bridge)..ready = true;
+    addTearDown(controller.dispose);
+    await tester.runAsync(() async {
+      final image = await sample(width: 1024, height: 768);
+      final bytes = (await image.toByteData(format: ui.ImageByteFormat.png))!
+          .buffer
+          .asUint8List();
+      image.dispose();
+      await controller.loadBytes(bytes);
+    });
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ListenableBuilder(
+          listenable: controller,
+          builder: (context, _) => Workspace(controller: controller),
+        ),
+      ),
+    );
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 60)),
+    );
+    await tester.pumpAndSettle();
+    await tester.dragFrom(const Offset(100, 100), const Offset(400, 240));
+    await tester.pumpAndSettle();
+    SelectionPainter painter() => tester
+        .widgetList<CustomPaint>(find.byType(CustomPaint))
+        .map((w) => w.painter)
+        .whereType<SelectionPainter>()
+        .single;
+    await tester.tap(find.byTooltip('圆形框选'));
+    await tester.pumpAndSettle();
+    expect(painter().shape, SelectionShape.circle);
+    expect(painter().region!.width, painter().region!.height);
+    final handle = painter().region!.bottomRight;
+    await tester.dragFrom(handle, const Offset(100, 40));
+    await tester.pumpAndSettle();
+    expect(painter().region!.width, painter().region!.height);
+    await tester.tap(find.byTooltip('椭圆框选'));
+    await tester.pumpAndSettle();
+    expect(painter().shape, SelectionShape.ellipse);
+    await tester.tap(find.byTooltip('撤销'));
+    await tester.pumpAndSettle();
+    expect(painter().shape, SelectionShape.circle);
+    await tester.tap(find.byTooltip('重做'));
+    await tester.pumpAndSettle();
+    expect(painter().shape, SelectionShape.ellipse);
+    await tester.tap(find.byTooltip('图钉暂存 · F'));
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 70)),
+    );
+    await tester.pumpAndSettle();
+    expect(bridge.pinned, isNotNull);
+    expect(bridge.copied, isNull);
+    expect(controller.clip, isNull);
+  });
   test(
     'Blur is local and always under arrows, rectangles and text backgrounds',
     () async {

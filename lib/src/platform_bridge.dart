@@ -13,6 +13,12 @@ class DesktopBridge {
       channel.invokeMapMethod<Object?, Object?>('capture', mode);
   Future<String?> save(Uint8List bytes, String name) =>
       channel.invokeMethod<String>('save', {'bytes': bytes, 'name': name});
+  Future<void> pin(Uint8List bytes, Map<String, double> rect, bool animate) =>
+      channel.invokeMethod('pin', {
+        'bytes': bytes,
+        ...rect,
+        'animate': animate,
+      });
   Future<void> copy(Uint8List bytes) => channel.invokeMethod('copy', bytes);
   Future<void> permissions() => channel.invokeMethod('permissions');
   Future<void> present(String panel) => channel.invokeMethod('present', panel);

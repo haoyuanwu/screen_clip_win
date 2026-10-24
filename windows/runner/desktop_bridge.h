@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include "pinned_image_window.h"
 #pragma comment(lib, "gdiplus.lib")
 #pragma comment(lib, "comdlg32.lib")
 #pragma comment(lib, "shell32.lib")
@@ -24,6 +25,7 @@ class DesktopBridge {
   using Value = flutter::EncodableValue;
   using Result = flutter::MethodResult<Value>;
   HWND owner;
+  std::vector<HWND> pins;
   std::unique_ptr<flutter::MethodChannel<Value>> channel;
   ULONG_PTR gdiplus = 0;
   NOTIFYICONDATAW tray{};
@@ -111,6 +113,18 @@ class DesktopBridge {
             std::ofstream out(std::wstring(path),std::ios::binary); out.write(reinterpret_cast<const char*>(bytes.data()),static_cast<std::streamsize>(bytes.size()));
             if(!out) result->Error("save","Could not write image"); else result->Success(Value(Utf8(path)));
           } else result->Success();
+        } else if(method=="pin") {
+          const auto& args=std::get<flutter::EncodableMap>(*call.arguments());
+          const auto& bytes=std::get<std::vector<uint8_t>>(args.at(Value("bytes")));
+          auto x=static_cast<LONG>(std::get<double>(args.at(Value("x"))))+desktop.left;
+          auto y=static_cast<LONG>(std::get<double>(args.at(Value("y"))))+desktop.top;
+          auto width=static_cast<LONG>(std::get<double>(args.at(Value("width"))));
+          auto height=static_cast<LONG>(std::get<double>(args.at(Value("height"))));
+          BOOL animations=TRUE;SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION,0,&animations,0);
+          auto hwnd=PinnedImageWindow::Show(bytes,{x,y,x+width,y+height},animations && std::get<bool>(args.at(Value("animate"))));
+          if(!hwnd) {result->Error("pin","无法创建图钉，请重试");return;}
+          pins.erase(std::remove_if(pins.begin(),pins.end(),[](HWND item){return !IsWindow(item);}),pins.end());
+          pins.push_back(hwnd);result->Success();
         } else if(method=="copy") {
           const auto& bytes=std::get<std::vector<uint8_t>>(*call.arguments());
           HGLOBAL storage=GlobalAlloc(GMEM_MOVEABLE,bytes.size());
@@ -134,6 +148,7 @@ class DesktopBridge {
     });
   }
   ~DesktopBridge() {
+    for(auto hwnd:pins) if(IsWindow(hwnd)) DestroyWindow(hwnd);
     UnregisterHotKey(owner,71); Shell_NotifyIconW(NIM_DELETE,&tray);
     if(background) DeleteObject(background);
     Gdiplus::GdiplusShutdown(gdiplus);

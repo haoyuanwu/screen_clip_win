@@ -2,7 +2,7 @@
 
 一款轻巧的常驻截图工具。没有主页，也不保存截图历史；框选、标注、复制，在同一个截图界面里完成。
 
-[下载 Windows 安装版](https://github.com/haoyuanwu/screen_clip_win/releases/download/v1.0.0/ScreenClip-1.0.0-Windows-x64-Setup.exe) · [下载便携版](https://github.com/haoyuanwu/screen_clip_win/releases/download/v1.0.0/ScreenClip-1.0.0-Windows-x64-Portable.zip) · [查看发布版本](https://github.com/haoyuanwu/screen_clip_win/releases)
+[下载 Windows 安装版](https://github.com/haoyuanwu/screen_clip_win/releases/download/v1.1.0/ScreenClip-1.1.0-Windows-x64-Setup.exe) · [下载便携版](https://github.com/haoyuanwu/screen_clip_win/releases/download/v1.1.0/ScreenClip-1.1.0-Windows-x64-Portable.zip) · [查看发布版本](https://github.com/haoyuanwu/screen_clip_win/releases)
 
 ## 截图，只需几步
 
@@ -13,6 +13,10 @@
 启动后驻留系统托盘，不弹出主页。按 **Esc** 取消截图，不改变剪贴板；需要文件时可主动保存 PNG。
 
 ## 功能
+
+- **圆形／椭圆框选**：选择截图形状，导出透明边角 PNG。
+- **图钉暂存**：按 F 或点击图钉将图片暂存在屏幕顶层，带过渡动画；支持拖动、滚轮缩放、复制和关闭，多张图钉只在当前会话中保留。
+
 
 - **默认开机启动**：登录后驻留托盘，可在偏好设置中关闭。
 - **多种截图方式**：区域、窗口、全屏，以及 0 / 3 / 5 / 10 秒延时。
@@ -45,6 +49,7 @@
 | 撤销 / 重做 | Ctrl + Z / Ctrl + Shift + Z |
 | 选择 / 箭头 / 方框 / 画笔 / 文字 | V / A / R / P / T |
 | 隐私画笔 / 橡皮擦 | B / E |
+| 图钉暂存 | F |
 
 ## 源码与开发
 

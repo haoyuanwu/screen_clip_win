@@ -11,6 +11,8 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
   private var hotkey: EventHotKeyRef?
   private var eventHandler: EventHandlerRef?
   private var captureScreen: NSScreen?
+  private var capturePixelWidth: CGFloat = 1
+  private var pins: [PinnedImagePanel] = []
   override var canBecomeKey: Bool { true }
   override var canBecomeMain: Bool { true }
   private var capturing = false
@@ -58,6 +60,22 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
       case "dismiss": self.orderOut(nil); self.level = .normal; result(nil)
       case "copied": self.statusItem?.button?.toolTip = "已复制到剪贴板 · Control + Shift + X 再次截图"; result(nil)
       case "capture": self.capture(call.arguments as? String ?? "region", result: result)
+      case "pin":
+        guard let args = call.arguments as? [String: Any],
+              let bytes = args["bytes"] as? FlutterStandardTypedData,
+              let image = NSImage(data: bytes.data), let screen = self.captureScreen,
+              let x = args["x"] as? Double, let y = args["y"] as? Double,
+              let width = args["width"] as? Double, let height = args["height"] as? Double else {
+          result(FlutterError(code: "pin", message: "图片数据无效", details: nil)); return
+        }
+        let scale = screen.frame.width / self.capturePixelWidth
+        let source = NSRect(x: screen.frame.minX + x * scale,
+                            y: screen.frame.maxY - (y + height) * scale,
+                            width: width * scale, height: height * scale)
+        let pin = PinnedImagePanel(image: image, source: source, screen: screen,
+          animate: (args["animate"] as? Bool ?? true) && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+        pin.onClose = { [weak self, weak pin] in self?.pins.removeAll { $0 === pin } }
+        self.pins.append(pin); result(nil)
       case "copy":
         guard let bytes = call.arguments as? FlutterStandardTypedData, let image = NSImage(data: bytes.data) else { result(FlutterError(code: "image", message: "无法读取图片", details: nil)); return }
         NSPasteboard.general.clearContents()
@@ -143,6 +161,7 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
         }
         self.captureScreen = screen
         let image = try await self.snapshot(SCContentFilter(display: display, excludingWindows: ownWindows))
+        self.capturePixelWidth = CGFloat(image.width)
         let scaleX = CGFloat(image.width) / screen.frame.width
         let scaleY = CGFloat(image.height) / screen.frame.height
         let top = NSScreen.screens.first?.frame.maxY ?? 0
@@ -179,4 +198,76 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
   @objc private func showPreferences() { open("settings") }
   @objc private func quit() { channel.invokeMethod("dismissed", arguments: nil); NSApp.terminate(nil) }
   deinit { if let hotkey = hotkey { UnregisterEventHotKey(hotkey) }; if let eventHandler = eventHandler { RemoveEventHandler(eventHandler) } }
+}
+
+// Session-only image panels. No screenshot files or history are created.
+private class PinnedImagePanel: NSPanel, NSWindowDelegate {
+  var onClose: (() -> Void)?
+  let pinnedImage: NSImage
+  override var canBecomeKey: Bool { true }
+  init(image: NSImage, source: NSRect, screen: NSScreen, animate: Bool) {
+    pinnedImage = image
+    let work = screen.visibleFrame.insetBy(dx: 8, dy: 8)
+    let factor = min(1, min(work.width * 0.6 / source.width, (work.height * 0.6 - 34) / source.height))
+    let size = NSSize(width: max(1, source.width * factor), height: max(1, source.height * factor) + 34)
+    let destination = NSRect(x: min(max(source.minX + 12, work.minX), work.maxX - size.width),
+                             y: min(max(source.minY + 12, work.minY), work.maxY - size.height), width: size.width, height: size.height)
+    let origin = NSRect(x: source.minX, y: source.minY, width: source.width, height: source.height + 34)
+    super.init(contentRect: animate ? origin : destination, styleMask: [.borderless], backing: .buffered, defer: false)
+    title = "定格T · 图钉暂存"; isReleasedWhenClosed = false; delegate = self
+    level = .floating; collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+    backgroundColor = .clear; isOpaque = false; hasShadow = true; hidesOnDeactivate = false
+    contentView = PinnedImageView(frame: NSRect(origin: .zero, size: frame.size), image: image)
+    alphaValue = animate ? 0.88 : 1; orderFrontRegardless()
+    if animate {
+      NSAnimationContext.runAnimationGroup { context in
+        context.duration = 0.24
+        animator().setFrame(destination, display: true); animator().alphaValue = 1
+      }
+    }
+  }
+  func windowWillClose(_ notification: Notification) { onClose?() }
+  func copyImage() {
+    NSPasteboard.general.clearContents(); _ = NSPasteboard.general.writeObjects([pinnedImage])
+  }
+  override func keyDown(with event: NSEvent) {
+    if event.keyCode == 53 || event.keyCode == 51 { close() }
+    else if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers == "c" { copyImage() }
+    else { super.keyDown(with: event) }
+  }
+}
+
+private class PinnedImageView: NSView {
+  let image: NSImage
+  override var isFlipped: Bool { true }
+  init(frame: NSRect, image: NSImage) { self.image = image; super.init(frame: frame); autoresizingMask = [.width, .height] }
+  required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+  override func draw(_ dirtyRect: NSRect) {
+    image.draw(in: NSRect(x: 0, y: 34, width: bounds.width, height: max(1, bounds.height - 34)), from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+    NSColor(calibratedWhite: 0.14, alpha: 0.95).setFill()
+    NSBezierPath(roundedRect: NSRect(x: 0, y: 0, width: bounds.width, height: 34), xRadius: 8, yRadius: 8).fill()
+    ("定格T" as NSString).draw(at: NSPoint(x: 10, y: 10), withAttributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.white])
+    for (name, x) in [("doc.on.doc", bounds.width - 63), ("xmark", bounds.width - 27)] {
+      NSImage(systemSymbolName: name, accessibilityDescription: name == "xmark" ? "关闭图钉" : "复制图片")?.withSymbolConfiguration(NSImage.SymbolConfiguration(paletteColors: [.white]))?.draw(in: NSRect(x: x, y: 10, width: 14, height: 14))
+    }
+  }
+  override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+  override func mouseDown(with event: NSEvent) {
+    guard let panel = window as? PinnedImagePanel else { return }
+    let point = convert(event.locationInWindow, from: nil)
+    if point.y < 34 && point.x > bounds.width - 36 { panel.close() }
+    else if point.y < 34 && point.x > bounds.width - 72 { panel.copyImage() }
+    else { panel.performDrag(with: event) }
+  }
+  override func rightMouseUp(with event: NSEvent) { window?.close() }
+  override func scrollWheel(with event: NSEvent) {
+    guard let panel = window, let work = panel.screen?.visibleFrame.insetBy(dx: 8, dy: 8) else { return }
+    let ratio = image.size.height / image.size.width
+    let maxWidth = min(work.width, (work.height - 34) / ratio)
+    let width = min(maxWidth, max(min(110, maxWidth), panel.frame.width * (event.scrollingDeltaY > 0 ? 1.06 : 0.94)))
+    let height = width * ratio + 34
+    let x = min(max(panel.frame.minX, work.minX), work.maxX - width)
+    let y = min(max(panel.frame.minY, work.minY), work.maxY - height)
+    panel.setFrame(NSRect(x: x, y: y, width: width, height: height), display: true)
+  }
 }

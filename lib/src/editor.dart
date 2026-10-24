@@ -284,12 +284,29 @@ void paintCapture(
   }
 }
 
+enum SelectionShape { rectangle, circle, ellipse }
+
+Path selectionPath(Rect rect, SelectionShape shape) => Path()
+  ..addPath(
+    shape == SelectionShape.rectangle
+        ? (Path()..addRect(rect))
+        : (Path()..addOval(rect)),
+    Offset.zero,
+  );
+
+Rect constrainSelectionShape(Rect rect, SelectionShape shape) {
+  if (shape != SelectionShape.circle) return rect;
+  final side = math.min(rect.width, rect.height);
+  return Rect.fromCenter(center: rect.center, width: side, height: side);
+}
+
 /// Original-resolution PNG export using the same layer compositing as preview.
 Future<Uint8List> renderCapture(
   ui.Image image,
   List<Mark> marks,
   Rect? crop, {
   ui.Image? mosaic,
+  SelectionShape shape = SelectionShape.rectangle,
 }) async {
   final bounds = Rect.fromLTWH(
     0,
@@ -302,7 +319,7 @@ Future<Uint8List> renderCapture(
   final recorder = ui.PictureRecorder();
   final canvas = Canvas(recorder);
   canvas.translate(-area.left, -area.top);
-  canvas.clipRect(area);
+  canvas.clipPath(selectionPath(area, shape));
   final ownMosaic =
       mosaic == null && marks.any((m) => m.tool == MarkTool.mosaic)
       ? await makeMosaicImage(image)
@@ -338,6 +355,10 @@ class _CaptureEditorState extends State<CaptureEditor> {
   MarkTool privacyTool = MarkTool.redact;
   String? loadError;
   MarkTool tool = MarkTool.select;
+  SelectionShape shape = SelectionShape.rectangle;
+  final List<({SelectionShape shape, Rect? region})> shapeUndo = [],
+      shapeRedo = [];
+
   Color color = const Color(0xffd92d3e);
   double stroke = 3;
   Rect? region, hovered;
@@ -412,13 +433,28 @@ class _CaptureEditorState extends State<CaptureEditor> {
     selectionRedo.clear();
     redoOperations.clear();
     textRedo.clear();
+    shapeRedo.clear();
+  }
+
+  void chooseShape(SelectionShape next) {
+    if (locked || shape == next) return;
+    commitText();
+    setState(() {
+      shapeUndo.add((shape: shape, region: region));
+      operations.add(3);
+      commit();
+      shape = next;
+      if (region != null) region = constrainSelectionShape(region!, shape);
+      tool = MarkTool.select;
+      colorPanel = null;
+    });
   }
 
   void changeRegion(Rect? next) {
     selectionUndo.add(region);
     operations.add(1);
     commit();
-    region = next;
+    region = next == null ? null : constrainSelectionShape(next, shape);
   }
 
   void undoOne() {
@@ -428,7 +464,12 @@ class _CaptureEditorState extends State<CaptureEditor> {
     setState(() {
       final selection = operations.removeLast();
       redoOperations.add(selection);
-      if (selection == 2) {
+      if (selection == 3) {
+        shapeRedo.add((shape: shape, region: region));
+        final previous = shapeUndo.removeLast();
+        shape = previous.shape;
+        region = previous.region;
+      } else if (selection == 2) {
         final edit = textUndo.removeLast();
         marks[edit.index] = edit.before;
         textRedo.add(edit);
@@ -448,7 +489,12 @@ class _CaptureEditorState extends State<CaptureEditor> {
     setState(() {
       final selection = redoOperations.removeLast();
       operations.add(selection);
-      if (selection == 2) {
+      if (selection == 3) {
+        shapeUndo.add((shape: shape, region: region));
+        final next = shapeRedo.removeLast();
+        shape = next.shape;
+        region = next.region;
+      } else if (selection == 2) {
         final edit = textRedo.removeLast();
         marks[edit.index] = edit.after;
         textUndo.add(edit);
@@ -461,13 +507,28 @@ class _CaptureEditorState extends State<CaptureEditor> {
     });
   }
 
-  Future<void> finish(bool save) async {
+  Future<void> finish(bool save, {bool pin = false}) async {
     if (image == null || locked || region == null) return;
     commitText();
     setState(() => rendering = true);
     try {
-      final bytes = await renderCapture(image!, marks, region, mosaic: mosaic);
-      await widget.controller.finish(bytes, save: save);
+      final bytes = await renderCapture(
+        image!,
+        marks,
+        region,
+        mosaic: mosaic,
+        shape: shape,
+      );
+      if (!mounted) return;
+      if (pin) {
+        await widget.controller.pin(
+          bytes,
+          region!,
+          animate: !MediaQuery.disableAnimationsOf(context),
+        );
+      } else {
+        await widget.controller.finish(bytes, save: save);
+      }
     } catch (e) {
       if (mounted) setState(() => loadError = '生成图片失败：$e');
     } finally {
@@ -617,13 +678,13 @@ class _CaptureEditorState extends State<CaptureEditor> {
       }
       dragKind = handle >= 0
           ? 'resize'
-          : region?.contains(p) == true
+          : region != null && selectionPath(region!, shape).contains(p)
           ? 'move'
           : 'new';
       if (dragKind == 'new') setState(() => region = Rect.fromPoints(p, p));
       return;
     }
-    if (!region!.contains(p)) return;
+    if (!selectionPath(region!, shape).contains(p)) return;
     if (tool == MarkTool.text) {
       addText(p);
       return;
@@ -648,7 +709,14 @@ class _CaptureEditorState extends State<CaptureEditor> {
     if (dragStart != null) {
       setState(() {
         if (dragKind == 'new') {
-          region = Rect.fromPoints(dragStart!, p).intersect(bounds);
+          final start = dragStart!;
+          if (shape == SelectionShape.circle) {
+            final delta = p - start;
+            final side = math.min(delta.dx.abs(), delta.dy.abs());
+            p = start + Offset(side * delta.dx.sign, side * delta.dy.sign);
+          }
+          region = Rect.fromPoints(start, p).intersect(bounds);
+          region = constrainSelectionShape(region!, shape);
         } else if (dragKind == 'move') {
           final r = dragRegion!, delta = p - dragStart!;
           final dx = delta.dx.clamp(-r.left, bounds.right - r.right),
@@ -665,7 +733,10 @@ class _CaptureEditorState extends State<CaptureEditor> {
           if ([4, 5, 6].contains(handle)) {
             bottom = p.dy.clamp(top + 2, bounds.bottom);
           }
-          region = Rect.fromLTRB(left, top, right, bottom);
+          region = constrainSelectionShape(
+            Rect.fromLTRB(left, top, right, bottom),
+            shape,
+          );
         }
       });
       return;
@@ -951,6 +1022,24 @@ class _CaptureEditorState extends State<CaptureEditor> {
                 '${region!.width.round()} × ${region!.height.round()}',
                 style: TextStyle(fontSize: 10, color: cs.onSurfaceVariant),
               ),
+              if (tool == MarkTool.select) ...[
+                const SizedBox(width: 6),
+                for (final entry in [
+                  (SelectionShape.rectangle, '矩形框选', CupertinoIcons.rectangle),
+                  (SelectionShape.circle, '圆形框选', CupertinoIcons.circle),
+                  (SelectionShape.ellipse, '椭圆框选', CupertinoIcons.circle),
+                ])
+                  ToolButton(
+                    size: 24,
+                    label: entry.$2,
+                    selected: shape == entry.$1,
+                    onPressed: locked ? null : () => chooseShape(entry.$1),
+                    child: Transform.scale(
+                      scaleY: entry.$1 == SelectionShape.ellipse ? 0.65 : 1,
+                      child: Icon(entry.$3, size: 15),
+                    ),
+                  ),
+              ],
               const Spacer(),
               AnimatedSwitcher(
                 duration: MediaQuery.disableAnimationsOf(context)
@@ -958,7 +1047,7 @@ class _CaptureEditorState extends State<CaptureEditor> {
                     : const Duration(milliseconds: 100),
                 child: Text(
                   textAnchor == null
-                      ? 'Enter 复制 · Esc 取消'
+                      ? 'Enter 复制'
                       : 'Enter 换行 · Ctrl/⌘+Enter 完成',
                   key: ValueKey(textAnchor != null),
                   style: TextStyle(fontSize: 9, color: cs.onSurfaceVariant),
@@ -998,7 +1087,7 @@ class _CaptureEditorState extends State<CaptureEditor> {
                 (MarkTool.erase, CupertinoIcons.pencil_slash, '橡皮擦 · E'),
               ])
                 ToolButton(
-                  size: 30,
+                  size: 28,
                   label: entry.$3,
                   icon: entry.$2,
                   selected: tool == entry.$1,
@@ -1006,7 +1095,7 @@ class _CaptureEditorState extends State<CaptureEditor> {
                 ),
               separator(),
               ToolButton(
-                size: 30,
+                size: 28,
                 label: '标注颜色',
                 selected: colorPanel == 'foreground',
                 onPressed: locked
@@ -1027,31 +1116,39 @@ class _CaptureEditorState extends State<CaptureEditor> {
                 ),
               ),
               ToolButton(
-                size: 30,
+                size: 28,
                 label: '撤销',
                 icon: CupertinoIcons.arrow_uturn_left,
                 onPressed: operations.isEmpty || locked ? null : undoOne,
               ),
               ToolButton(
-                size: 30,
+                size: 28,
                 label: '重做',
                 icon: CupertinoIcons.arrow_uturn_right,
                 onPressed: redoOperations.isEmpty || locked ? null : redoOne,
               ),
               ToolButton(
-                size: 30,
+                size: 28,
                 label: '取消 · Esc',
                 icon: CupertinoIcons.xmark,
                 onPressed: locked ? null : widget.controller.discard,
               ),
               ToolButton(
-                size: 30,
+                size: 28,
                 label: '保存到文件',
                 icon: CupertinoIcons.square_arrow_down,
                 onPressed: locked ? null : () => finish(true),
               ),
               ToolButton(
-                size: 30,
+                size: 28,
+                label: '图钉暂存 · F',
+                icon: CupertinoIcons.pin,
+                onPressed: locked || image == null
+                    ? null
+                    : () => finish(false, pin: true),
+              ),
+              ToolButton(
+                size: 28,
                 label: '复制到剪贴板 · Enter',
                 icon: CupertinoIcons.check_mark,
                 primary: true,
@@ -1131,6 +1228,8 @@ class _CaptureEditorState extends State<CaptureEditor> {
       bindings: textAnchor != null
           ? {}
           : {
+              const SingleActivator(LogicalKeyboardKey.keyF): () =>
+                  finish(false, pin: true),
               const SingleActivator(LogicalKeyboardKey.escape): () =>
                   locked ? null : widget.controller.discard(),
               const SingleActivator(LogicalKeyboardKey.enter): () =>
@@ -1223,7 +1322,7 @@ class _CaptureEditorState extends State<CaptureEditor> {
             final showBrushCursor =
                 cursor != null &&
                 region != null &&
-                region!.contains(cursor!) &&
+                selectionPath(region!, shape).contains(cursor!) &&
                 hasBrushCursor(tool) &&
                 !locked &&
                 textAnchor == null;
@@ -1306,6 +1405,7 @@ class _CaptureEditorState extends State<CaptureEditor> {
                           selected,
                           region != null && tool == MarkTool.select,
                           mosaic: mosaic,
+                          shape: shape,
                         ),
                         child: const SizedBox.expand(),
                       ),
@@ -1501,6 +1601,37 @@ class _CaptureEditorState extends State<CaptureEditor> {
                                   : '拖动框选 · Enter 复制 · Esc 取消',
                               style: const TextStyle(fontSize: 12),
                             ),
+                            for (final entry in [
+                              (
+                                SelectionShape.rectangle,
+                                '矩形框选',
+                                CupertinoIcons.rectangle,
+                              ),
+                              (
+                                SelectionShape.circle,
+                                '圆形框选',
+                                CupertinoIcons.circle,
+                              ),
+                              (
+                                SelectionShape.ellipse,
+                                '椭圆框选',
+                                CupertinoIcons.circle,
+                              ),
+                            ])
+                              ToolButton(
+                                size: 28,
+                                label: entry.$2,
+                                selected: shape == entry.$1,
+                                onPressed: locked
+                                    ? null
+                                    : () => chooseShape(entry.$1),
+                                child: Transform.scale(
+                                  scaleY: entry.$1 == SelectionShape.ellipse
+                                      ? .65
+                                      : 1,
+                                  child: Icon(entry.$3, size: 16),
+                                ),
+                              ),
                             ToolButton(
                               label: '取消 · Esc',
                               icon: CupertinoIcons.xmark,
@@ -1558,12 +1689,14 @@ class SelectionPainter extends CustomPainter {
     this.region,
     this.showHandles, {
     this.mosaic,
+    this.shape = SelectionShape.rectangle,
   });
   final ui.Image? image, mosaic;
   final List<Mark> marks;
   final Mark? active;
   final Rect? region;
   final bool showHandles;
+  final SelectionShape shape;
   @override
   void paint(Canvas canvas, Size size) {
     canvas.drawColor(const Color(0xff111521), BlendMode.src);
@@ -1575,7 +1708,7 @@ class SelectionPainter extends CustomPainter {
     canvas.drawImage(im, Offset.zero, Paint());
     if (region != null) {
       canvas.save();
-      canvas.clipRect(region!);
+      canvas.clipPath(selectionPath(region!, shape));
       paintCapture(canvas, im, [...marks, ?active], mosaic: mosaic);
       canvas.restore();
     } else {
@@ -1593,11 +1726,11 @@ class SelectionPainter extends CustomPainter {
     final path = Path()
       ..fillType = PathFillType.evenOdd
       ..addRect(Offset.zero & size);
-    if (rect != null) path.addRect(rect);
+    if (rect != null) path.addPath(selectionPath(rect, shape), Offset.zero);
     canvas.drawPath(path, Paint()..color = Colors.black.withValues(alpha: .4));
     if (rect != null) {
-      canvas.drawRect(
-        rect,
+      canvas.drawPath(
+        selectionPath(rect, shape),
         Paint()
           ..color = const Color(0xff4d84ff)
           ..strokeWidth = 1.5
