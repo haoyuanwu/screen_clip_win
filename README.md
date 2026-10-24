@@ -2,7 +2,7 @@
 
 一款轻巧的常驻截图工具。没有主页，也不保存截图历史；框选、标注、复制，在同一个截图界面里完成。
 
-[下载 Windows 安装版](https://github.com/haoyuanwu/screen_clip_win/releases/download/v1.1.0/ScreenClip-1.1.0-Windows-x64-Setup.exe) · [下载便携版](https://github.com/haoyuanwu/screen_clip_win/releases/download/v1.1.0/ScreenClip-1.1.0-Windows-x64-Portable.zip) · [查看发布版本](https://github.com/haoyuanwu/screen_clip_win/releases)
+[下载 Windows 安装版](https://github.com/haoyuanwu/screen_clip_win/releases/download/v1.1.1/ScreenClip-1.1.1-Windows-x64-Setup.exe) · [下载便携版](https://github.com/haoyuanwu/screen_clip_win/releases/download/v1.1.1/ScreenClip-1.1.1-Windows-x64-Portable.zip) · [查看发布版本](https://github.com/haoyuanwu/screen_clip_win/releases)
 
 ## 截图，只需几步
 
