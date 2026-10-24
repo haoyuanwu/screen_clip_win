@@ -18,6 +18,8 @@ enum MarkTool {
   pen,
   arrow,
   rectangle,
+  circle,
+  ellipse,
   text,
   number,
   redact,
@@ -28,7 +30,10 @@ enum MarkTool {
 
 /// Diameter in source pixels, shared by stroke rendering and cursor feedback.
 double brushDiameter(MarkTool tool, double width) => switch (tool) {
-  MarkTool.arrow || MarkTool.rectangle => width * 1.6,
+  MarkTool.arrow ||
+  MarkTool.rectangle ||
+  MarkTool.circle ||
+  MarkTool.ellipse => width * 1.6,
   MarkTool.redact || MarkTool.mosaic || MarkTool.erase => width * 9,
   MarkTool.number => width * 4 + 24,
   _ => width,
@@ -37,6 +42,8 @@ bool hasBrushCursor(MarkTool tool) => const [
   MarkTool.pen,
   MarkTool.arrow,
   MarkTool.rectangle,
+  MarkTool.circle,
+  MarkTool.ellipse,
   MarkTool.redact,
   MarkTool.mosaic,
   MarkTool.erase,
@@ -111,6 +118,23 @@ class Mark {
   )..layout(maxWidth: maxTextWidth);
 }
 
+bool isShapeTool(MarkTool tool) => const [
+  MarkTool.rectangle,
+  MarkTool.circle,
+  MarkTool.ellipse,
+].contains(tool);
+
+Rect annotationBounds(Mark mark) {
+  final first = mark.points.first, last = mark.points.last;
+  if (mark.tool != MarkTool.circle) return Rect.fromPoints(first, last);
+  final delta = last - first;
+  final side = math.min(delta.dx.abs(), delta.dy.abs());
+  return Rect.fromPoints(
+    first,
+    first + Offset(side * delta.dx.sign, side * delta.dy.sign),
+  );
+}
+
 /// All positions are stored in source-image pixels, independent of UI scaling.
 void drawMark(Canvas canvas, Mark mark) {
   if (mark.points.isEmpty) return;
@@ -121,7 +145,7 @@ void drawMark(Canvas canvas, Mark mark) {
     ..style = PaintingStyle.stroke
     ..strokeCap = StrokeCap.round
     ..strokeJoin = StrokeJoin.round;
-  final rect = Rect.fromPoints(first, last);
+  final rect = annotationBounds(mark);
   switch (mark.tool) {
     case MarkTool.pen:
       if (mark.points.length == 1) {
@@ -162,6 +186,9 @@ void drawMark(Canvas canvas, Mark mark) {
       );
     case MarkTool.rectangle:
       canvas.drawRect(rect, paint);
+    case MarkTool.circle:
+    case MarkTool.ellipse:
+      canvas.drawOval(rect, paint);
     case MarkTool.redact:
     case MarkTool.mosaic:
     case MarkTool.erase:
@@ -284,29 +311,12 @@ void paintCapture(
   }
 }
 
-enum SelectionShape { rectangle, circle, ellipse }
-
-Path selectionPath(Rect rect, SelectionShape shape) => Path()
-  ..addPath(
-    shape == SelectionShape.rectangle
-        ? (Path()..addRect(rect))
-        : (Path()..addOval(rect)),
-    Offset.zero,
-  );
-
-Rect constrainSelectionShape(Rect rect, SelectionShape shape) {
-  if (shape != SelectionShape.circle) return rect;
-  final side = math.min(rect.width, rect.height);
-  return Rect.fromCenter(center: rect.center, width: side, height: side);
-}
-
 /// Original-resolution PNG export using the same layer compositing as preview.
 Future<Uint8List> renderCapture(
   ui.Image image,
   List<Mark> marks,
   Rect? crop, {
   ui.Image? mosaic,
-  SelectionShape shape = SelectionShape.rectangle,
 }) async {
   final bounds = Rect.fromLTWH(
     0,
@@ -319,7 +329,7 @@ Future<Uint8List> renderCapture(
   final recorder = ui.PictureRecorder();
   final canvas = Canvas(recorder);
   canvas.translate(-area.left, -area.top);
-  canvas.clipPath(selectionPath(area, shape));
+  canvas.clipRect(area);
   final ownMosaic =
       mosaic == null && marks.any((m) => m.tool == MarkTool.mosaic)
       ? await makeMosaicImage(image)
@@ -355,9 +365,6 @@ class _CaptureEditorState extends State<CaptureEditor> {
   MarkTool privacyTool = MarkTool.redact;
   String? loadError;
   MarkTool tool = MarkTool.select;
-  SelectionShape shape = SelectionShape.rectangle;
-  final List<({SelectionShape shape, Rect? region})> shapeUndo = [],
-      shapeRedo = [];
 
   Color color = const Color(0xffd92d3e);
   double stroke = 3;
@@ -433,28 +440,13 @@ class _CaptureEditorState extends State<CaptureEditor> {
     selectionRedo.clear();
     redoOperations.clear();
     textRedo.clear();
-    shapeRedo.clear();
-  }
-
-  void chooseShape(SelectionShape next) {
-    if (locked || shape == next) return;
-    commitText();
-    setState(() {
-      shapeUndo.add((shape: shape, region: region));
-      operations.add(3);
-      commit();
-      shape = next;
-      if (region != null) region = constrainSelectionShape(region!, shape);
-      tool = MarkTool.select;
-      colorPanel = null;
-    });
   }
 
   void changeRegion(Rect? next) {
     selectionUndo.add(region);
     operations.add(1);
     commit();
-    region = next == null ? null : constrainSelectionShape(next, shape);
+    region = next;
   }
 
   void undoOne() {
@@ -464,12 +456,7 @@ class _CaptureEditorState extends State<CaptureEditor> {
     setState(() {
       final selection = operations.removeLast();
       redoOperations.add(selection);
-      if (selection == 3) {
-        shapeRedo.add((shape: shape, region: region));
-        final previous = shapeUndo.removeLast();
-        shape = previous.shape;
-        region = previous.region;
-      } else if (selection == 2) {
+      if (selection == 2) {
         final edit = textUndo.removeLast();
         marks[edit.index] = edit.before;
         textRedo.add(edit);
@@ -489,12 +476,7 @@ class _CaptureEditorState extends State<CaptureEditor> {
     setState(() {
       final selection = redoOperations.removeLast();
       operations.add(selection);
-      if (selection == 3) {
-        shapeUndo.add((shape: shape, region: region));
-        final next = shapeRedo.removeLast();
-        shape = next.shape;
-        region = next.region;
-      } else if (selection == 2) {
+      if (selection == 2) {
         final edit = textRedo.removeLast();
         marks[edit.index] = edit.after;
         textUndo.add(edit);
@@ -512,13 +494,7 @@ class _CaptureEditorState extends State<CaptureEditor> {
     commitText();
     setState(() => rendering = true);
     try {
-      final bytes = await renderCapture(
-        image!,
-        marks,
-        region,
-        mosaic: mosaic,
-        shape: shape,
-      );
+      final bytes = await renderCapture(image!, marks, region, mosaic: mosaic);
       if (!mounted) return;
       if (pin) {
         await widget.controller.pin(
@@ -678,13 +654,13 @@ class _CaptureEditorState extends State<CaptureEditor> {
       }
       dragKind = handle >= 0
           ? 'resize'
-          : region != null && selectionPath(region!, shape).contains(p)
+          : region?.contains(p) == true
           ? 'move'
           : 'new';
       if (dragKind == 'new') setState(() => region = Rect.fromPoints(p, p));
       return;
     }
-    if (!selectionPath(region!, shape).contains(p)) return;
+    if (!region!.contains(p)) return;
     if (tool == MarkTool.text) {
       addText(p);
       return;
@@ -709,14 +685,7 @@ class _CaptureEditorState extends State<CaptureEditor> {
     if (dragStart != null) {
       setState(() {
         if (dragKind == 'new') {
-          final start = dragStart!;
-          if (shape == SelectionShape.circle) {
-            final delta = p - start;
-            final side = math.min(delta.dx.abs(), delta.dy.abs());
-            p = start + Offset(side * delta.dx.sign, side * delta.dy.sign);
-          }
-          region = Rect.fromPoints(start, p).intersect(bounds);
-          region = constrainSelectionShape(region!, shape);
+          region = Rect.fromPoints(dragStart!, p).intersect(bounds);
         } else if (dragKind == 'move') {
           final r = dragRegion!, delta = p - dragStart!;
           final dx = delta.dx.clamp(-r.left, bounds.right - r.right),
@@ -733,10 +702,7 @@ class _CaptureEditorState extends State<CaptureEditor> {
           if ([4, 5, 6].contains(handle)) {
             bottom = p.dy.clamp(top + 2, bounds.bottom);
           }
-          region = constrainSelectionShape(
-            Rect.fromLTRB(left, top, right, bottom),
-            shape,
-          );
+          region = Rect.fromLTRB(left, top, right, bottom);
         }
       });
       return;
@@ -945,6 +911,24 @@ class _CaptureEditorState extends State<CaptureEditor> {
                   : 'stroke-inspector',
             ),
             children: [
+              if (isShapeTool(tool)) ...[
+                for (final entry in [
+                  (MarkTool.rectangle, '方框标注', CupertinoIcons.square),
+                  (MarkTool.circle, '圆形标注', CupertinoIcons.circle),
+                  (MarkTool.ellipse, '椭圆标注', CupertinoIcons.circle),
+                ])
+                  ToolButton(
+                    size: 28,
+                    label: entry.$2,
+                    selected: tool == entry.$1,
+                    onPressed: locked ? null : () => chooseTool(entry.$1),
+                    child: Transform.scale(
+                      scaleY: entry.$1 == MarkTool.ellipse ? .65 : 1,
+                      child: Icon(entry.$3, size: 16),
+                    ),
+                  ),
+                const SizedBox(width: 4),
+              ],
               if (isPrivacyBrush(tool)) ...[
                 ToolButton(
                   label: '模糊画笔',
@@ -1022,24 +1006,6 @@ class _CaptureEditorState extends State<CaptureEditor> {
                 '${region!.width.round()} × ${region!.height.round()}',
                 style: TextStyle(fontSize: 10, color: cs.onSurfaceVariant),
               ),
-              if (tool == MarkTool.select) ...[
-                const SizedBox(width: 6),
-                for (final entry in [
-                  (SelectionShape.rectangle, '矩形框选', CupertinoIcons.rectangle),
-                  (SelectionShape.circle, '圆形框选', CupertinoIcons.circle),
-                  (SelectionShape.ellipse, '椭圆框选', CupertinoIcons.circle),
-                ])
-                  ToolButton(
-                    size: 24,
-                    label: entry.$2,
-                    selected: shape == entry.$1,
-                    onPressed: locked ? null : () => chooseShape(entry.$1),
-                    child: Transform.scale(
-                      scaleY: entry.$1 == SelectionShape.ellipse ? 0.65 : 1,
-                      child: Icon(entry.$3, size: 15),
-                    ),
-                  ),
-              ],
               const Spacer(),
               AnimatedSwitcher(
                 duration: MediaQuery.disableAnimationsOf(context)
@@ -1090,7 +1056,9 @@ class _CaptureEditorState extends State<CaptureEditor> {
                   size: 28,
                   label: entry.$3,
                   icon: entry.$2,
-                  selected: tool == entry.$1,
+                  selected:
+                      tool == entry.$1 ||
+                      (entry.$1 == MarkTool.rectangle && isShapeTool(tool)),
                   onPressed: locked ? null : () => chooseTool(entry.$1),
                 ),
               separator(),
@@ -1302,6 +1270,8 @@ class _CaptureEditorState extends State<CaptureEditor> {
                 LogicalKeyboardKey.keyA: MarkTool.arrow,
                 LogicalKeyboardKey.keyP: MarkTool.pen,
                 LogicalKeyboardKey.keyR: MarkTool.rectangle,
+                LogicalKeyboardKey.keyO: MarkTool.circle,
+                LogicalKeyboardKey.keyL: MarkTool.ellipse,
                 LogicalKeyboardKey.keyT: MarkTool.text,
                 LogicalKeyboardKey.keyB: privacyTool,
                 LogicalKeyboardKey.keyE: MarkTool.erase,
@@ -1322,7 +1292,7 @@ class _CaptureEditorState extends State<CaptureEditor> {
             final showBrushCursor =
                 cursor != null &&
                 region != null &&
-                selectionPath(region!, shape).contains(cursor!) &&
+                region!.contains(cursor!) &&
                 hasBrushCursor(tool) &&
                 !locked &&
                 textAnchor == null;
@@ -1405,7 +1375,6 @@ class _CaptureEditorState extends State<CaptureEditor> {
                           selected,
                           region != null && tool == MarkTool.select,
                           mosaic: mosaic,
-                          shape: shape,
                         ),
                         child: const SizedBox.expand(),
                       ),
@@ -1601,37 +1570,6 @@ class _CaptureEditorState extends State<CaptureEditor> {
                                   : '拖动框选 · Enter 复制 · Esc 取消',
                               style: const TextStyle(fontSize: 12),
                             ),
-                            for (final entry in [
-                              (
-                                SelectionShape.rectangle,
-                                '矩形框选',
-                                CupertinoIcons.rectangle,
-                              ),
-                              (
-                                SelectionShape.circle,
-                                '圆形框选',
-                                CupertinoIcons.circle,
-                              ),
-                              (
-                                SelectionShape.ellipse,
-                                '椭圆框选',
-                                CupertinoIcons.circle,
-                              ),
-                            ])
-                              ToolButton(
-                                size: 28,
-                                label: entry.$2,
-                                selected: shape == entry.$1,
-                                onPressed: locked
-                                    ? null
-                                    : () => chooseShape(entry.$1),
-                                child: Transform.scale(
-                                  scaleY: entry.$1 == SelectionShape.ellipse
-                                      ? .65
-                                      : 1,
-                                  child: Icon(entry.$3, size: 16),
-                                ),
-                              ),
                             ToolButton(
                               label: '取消 · Esc',
                               icon: CupertinoIcons.xmark,
@@ -1689,14 +1627,12 @@ class SelectionPainter extends CustomPainter {
     this.region,
     this.showHandles, {
     this.mosaic,
-    this.shape = SelectionShape.rectangle,
   });
   final ui.Image? image, mosaic;
   final List<Mark> marks;
   final Mark? active;
   final Rect? region;
   final bool showHandles;
-  final SelectionShape shape;
   @override
   void paint(Canvas canvas, Size size) {
     canvas.drawColor(const Color(0xff111521), BlendMode.src);
@@ -1708,7 +1644,7 @@ class SelectionPainter extends CustomPainter {
     canvas.drawImage(im, Offset.zero, Paint());
     if (region != null) {
       canvas.save();
-      canvas.clipPath(selectionPath(region!, shape));
+      canvas.clipRect(region!);
       paintCapture(canvas, im, [...marks, ?active], mosaic: mosaic);
       canvas.restore();
     } else {
@@ -1726,11 +1662,11 @@ class SelectionPainter extends CustomPainter {
     final path = Path()
       ..fillType = PathFillType.evenOdd
       ..addRect(Offset.zero & size);
-    if (rect != null) path.addPath(selectionPath(rect, shape), Offset.zero);
+    if (rect != null) path.addRect(rect);
     canvas.drawPath(path, Paint()..color = Colors.black.withValues(alpha: .4));
     if (rect != null) {
-      canvas.drawPath(
-        selectionPath(rect, shape),
+      canvas.drawRect(
+        rect,
         Paint()
           ..color = const Color(0xff4d84ff)
           ..strokeWidth = 1.5

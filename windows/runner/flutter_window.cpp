@@ -53,6 +53,13 @@ LRESULT
 FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
                               LPARAM const lparam) noexcept {
+  // Restart Manager uses session messages, not the resident window's close action.
+  // A query or a canceled shutdown must never terminate the application.
+  if (message == WM_QUERYENDSESSION) return TRUE;
+  if (message == WM_ENDSESSION) {
+    if (wparam) DestroyWindow(hwnd);
+    return 0;
+  }
   if (message == WM_DPICHANGED && bridge_ && bridge_->capture_surface) {
     // Update the engine DPI but keep the frozen virtual desktop's physical bounds.
     flutter_controller_->HandleTopLevelWindowProc(hwnd, message, wparam, lparam);

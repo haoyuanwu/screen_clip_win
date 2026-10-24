@@ -198,10 +198,17 @@ void main() {
             .writeAsBytes(data!.buffer.asUint8List());
         image.dispose();
       });
-      await tester.tap(find.byTooltip('调整选区 · V'));
+      await tester.tap(find.byTooltip('矩形 · R'));
       await tester.pumpAndSettle();
-      for (final entry in [('圆形框选', 'circle'), ('椭圆框选', 'ellipse')]) {
+      for (final entry in [('圆形标注', 'circle'), ('椭圆标注', 'ellipse')]) {
         await tester.tap(find.byTooltip(entry.$1));
+        await tester.pumpAndSettle();
+        await tester.dragFrom(
+          const Offset(830, 385),
+          entry.$2 == 'circle'
+              ? const Offset(140, 140)
+              : const Offset(260, 130),
+        );
         await tester.pumpAndSettle();
         await tester.runAsync(() async {
           final boundary =
@@ -216,7 +223,7 @@ void main() {
         await tester.tap(find.byTooltip('撤销'));
         await tester.pumpAndSettle();
       }
-      await tester.tap(find.byTooltip('矩形框选'));
+      await tester.tap(find.byTooltip('矩形 · R'));
       await tester.pumpAndSettle();
       await tester.tap(find.byTooltip('文字 · T'));
       await tester.pump();
