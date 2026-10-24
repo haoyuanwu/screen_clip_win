@@ -45,3 +45,23 @@
 | 撤销 / 重做 | Ctrl + Z / Ctrl + Shift + Z |
 | 选择 / 箭头 / 方框 / 画笔 / 文字 | V / A / R / P / T |
 | 隐私画笔 / 橡皮擦 | B / E |
+
+## 源码与开发
+
+项目采用 Flutter 共享截图编辑界面，Windows 使用 Win32 托盘、全局快捷键和截图服务；macOS 使用菜单栏与 ScreenCaptureKit。
+
+使用 `.fvmrc` 指定的 Flutter 版本：
+
+```sh
+flutter pub get
+flutter analyze
+flutter test
+flutter run -d windows
+flutter build windows --release
+```
+
+Windows 安装脚本为 `packaging/windows.iss`，使用 Inno Setup 编译。分发时需包含整个 Release 目录及匹配的 Microsoft Visual C++ 运行库。
+
+在 Mac 上可执行 `flutter run -d macos` 或 `flutter build macos --release`。macOS 原生代码尚未完成真机编译验收。
+
+详细说明：[产品设计](docs/product-design.md)、[设计系统](design-system/screenclip/MASTER.md)、[发布说明](docs/releases/1.0.0.md)。
