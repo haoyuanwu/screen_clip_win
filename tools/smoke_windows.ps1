@@ -130,6 +130,8 @@ try {
  # Copy via the custom toolbar; it preserves original PNG resolution.
  $pinScale = [ClipSmoke]::GetDpiForWindow($pin) / 96.0
  $copyX = ($after.right-$after.left) - [int](54*$pinScale)
+ [void][ClipSmoke]::SendMessage($pin,0x0200,[IntPtr]::Zero,[ClipSmoke]::Point($copyX,[int](17*$pinScale)))
+ Start-Sleep -Milliseconds 220
  [void][ClipSmoke]::SendMessage($pin,0x0201,[IntPtr]1,[ClipSmoke]::Point($copyX,[int](17*$pinScale)))
  if ([ClipSmoke]::GetClipboardSequenceNumber() -eq $sequence) { throw 'Pin copy button did not copy.' }
  if (-not [ClipSmoke]::OpenClipboard([IntPtr]::Zero)) { throw 'Clipboard unavailable.' }

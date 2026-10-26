@@ -3,9 +3,12 @@
 #
 
 list(APPEND FLUTTER_PLUGIN_LIST
+  desktop_vision
+  file_selector_windows
 )
 
 list(APPEND FLUTTER_FFI_PLUGIN_LIST
+  flutter_zxing
 )
 
 set(PLUGIN_BUNDLED_LIBRARIES)

@@ -180,7 +180,7 @@ void main() {
       await tester.pumpAndSettle();
       await tester.dragFrom(const Offset(270, 160), const Offset(900, 450));
       await tester.pumpAndSettle();
-      await tester.tap(find.byTooltip('箭头 · A'));
+      await tester.tap(find.byTooltip('箭头 · Q'));
       await tester.pump();
       await tester.dragFrom(const Offset(1060, 260), const Offset(-250, 70));
       await tester.pump();
@@ -292,27 +292,6 @@ void main() {
         image.dispose();
       });
       await mosaicMouse.removePointer();
-
-      await tester.tap(find.byTooltip('橡皮擦 · E'));
-      await tester.pumpAndSettle();
-      await tester.dragFrom(const Offset(900, 285), const Offset(0, 50));
-      await tester.pumpAndSettle();
-      final eraserMouse = await tester.createGesture(
-        kind: PointerDeviceKind.mouse,
-      );
-      await eraserMouse.addPointer(location: const Offset(900, 320));
-      await eraserMouse.moveTo(const Offset(901, 320));
-      await tester.pumpAndSettle();
-      await tester.runAsync(() async {
-        final boundary =
-            key.currentContext!.findRenderObject()! as RenderRepaintBoundary;
-        final image = await boundary.toImage();
-        final data = await image.toByteData(format: ui.ImageByteFormat.png);
-        await File('${output.path}/eraser-${dark ? 'dark' : 'light'}.png')
-            .writeAsBytes(data!.buffer.asUint8List());
-        image.dispose();
-      });
-      await eraserMouse.removePointer();
 
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox.shrink());

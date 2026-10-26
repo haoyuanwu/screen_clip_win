@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'controller.dart';
 import 'editor.dart';
 import 'ui/controls.dart';
+import 'ui/color_preview.dart';
 
 /// Transient app-owned surfaces. Native hosts supply only tray and OS services.
 class Workspace extends StatelessWidget {
@@ -15,6 +16,8 @@ class Workspace extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = controller;
+    // A hidden desktop window can report zero size before its first presentation.
+    if (MediaQuery.sizeOf(context).isEmpty) return const SizedBox.shrink();
     return CallbackShortcuts(
       bindings: {
         const SingleActivator(LogicalKeyboardKey.escape): () {
@@ -73,7 +76,8 @@ class Workspace extends StatelessWidget {
                     child: AnimatedSwitcher(
                       duration:
                           (MediaQuery.disableAnimationsOf(context) ||
-                              c.panel == 'capture')
+                              c.panel == 'capture' ||
+                              c.panel == 'color')
                           ? Duration.zero
                           : const Duration(milliseconds: 170),
                       switchInCurve: Curves.easeOutCubic,
@@ -83,6 +87,18 @@ class Workspace extends StatelessWidget {
                               key: ValueKey(c.revision),
                               clip: c.clip!,
                               controller: c,
+                            )
+                          : c.panel == 'color' && c.sampledColor != null
+                          ? Padding(
+                              padding: const EdgeInsets.all(10),
+                              child: Center(
+                                child: ColorPreviewCard(
+                                  sample: c.sampledColor!,
+                                  fixed: true,
+                                  onClose: c.discard,
+                                  onResample: () => c.capture('color'),
+                                ),
+                              ),
                             )
                           : c.panel == 'settings'
                           ? Preferences(
@@ -127,15 +143,21 @@ class CaptureStrip extends StatelessWidget {
                   style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
                 ),
                 const SizedBox(width: 8),
-                Text(
-                  'SCREENSHOT',
-                  style: TextStyle(
-                    fontSize: 10,
-                    letterSpacing: 1.6,
-                    color: cs.onSurfaceVariant,
+                if (MediaQuery.sizeOf(context).width >= 440)
+                  Text(
+                    'SCREENSHOT',
+                    style: TextStyle(
+                      fontSize: 10,
+                      letterSpacing: 1.6,
+                      color: cs.onSurfaceVariant,
+                    ),
                   ),
-                ),
                 const Spacer(),
+                ToolButton(
+                  label: '屏幕取色 · Ctrl+Shift+C',
+                  icon: Icons.colorize_rounded,
+                  onPressed: c.busy ? null : () => c.capture('color'),
+                ),
                 ToolButton(
                   label: '偏好设置',
                   icon: CupertinoIcons.slider_horizontal_3,
@@ -184,60 +206,51 @@ class CaptureStrip extends StatelessWidget {
                 ],
               )
             else
-              LayoutBuilder(
-                builder: (context, constraints) => Wrap(
-                  spacing: 10,
-                  runSpacing: 10,
-                  children: [
-                    for (final item in const [
-                      ('region', CupertinoIcons.crop, '区域截图', '拖动选取'),
-                      ('window', CupertinoIcons.rectangle, '窗口截图', '点击窗口'),
-                      (
-                        'screen',
-                        CupertinoIcons.desktopcomputer,
-                        '全屏截图',
-                        '确认整屏',
-                      ),
-                    ])
-                      SizedBox(
-                        width: (constraints.maxWidth - 20) / 3,
-                        child: GlassPanel(
-                          padding: EdgeInsets.zero,
-                          child: ToolButton(
-                            label: item.$3,
-                            onPressed: c.ready && !c.busy
-                                ? () => c.capture(item.$1)
-                                : null,
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(vertical: 10),
-                              child: Column(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Icon(item.$2, size: 24),
-                                  const SizedBox(height: 10),
-                                  Text(
-                                    item.$3,
-                                    style: const TextStyle(
-                                      fontSize: 13,
-                                      fontWeight: FontWeight.w600,
-                                    ),
+              Row(
+                spacing: 10,
+                children: [
+                  for (final item in const [
+                    ('region', CupertinoIcons.crop, '区域截图', '拖动选取'),
+                    ('window', CupertinoIcons.rectangle, '窗口截图', '点击窗口'),
+                    ('screen', CupertinoIcons.desktopcomputer, '全屏截图', '确认整屏'),
+                  ])
+                    Expanded(
+                      child: GlassPanel(
+                        padding: EdgeInsets.zero,
+                        child: ToolButton(
+                          label: item.$3,
+                          onPressed: c.ready && !c.busy
+                              ? () => c.capture(item.$1)
+                              : null,
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 10),
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(item.$2, size: 24),
+                                const SizedBox(height: 10),
+                                Text(
+                                  item.$3,
+                                  style: const TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
                                   ),
-                                  const SizedBox(height: 5),
-                                  Text(
-                                    item.$4,
-                                    style: TextStyle(
-                                      fontSize: 10,
-                                      color: cs.onSurfaceVariant,
-                                    ),
+                                ),
+                                const SizedBox(height: 5),
+                                Text(
+                                  item.$4,
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    color: cs.onSurfaceVariant,
                                   ),
-                                ],
-                              ),
+                                ),
+                              ],
                             ),
                           ),
                         ),
                       ),
-                  ],
-                ),
+                    ),
+                ],
               ),
             const SizedBox(height: 18),
             Text(
@@ -444,6 +457,22 @@ class Preferences extends StatelessWidget {
                       const SizedBox(height: 4),
                       Text(
                         c.hotkey ? '全局区域截图 · Esc 取消' : '快捷键被其他应用占用',
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: cs.onSurfaceVariant,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      const Text(
+                        'Control + Shift + C',
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        c.colorHotkey ? '全局屏幕取色 · 无需框选' : '取色快捷键不可用，可从工具栏进入',
                         style: TextStyle(
                           fontSize: 11,
                           color: cs.onSurfaceVariant,

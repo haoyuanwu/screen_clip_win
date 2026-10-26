@@ -2,16 +2,56 @@ import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show RenderWrap;
 import 'package:flutter/services.dart';
+
+/// Wrap's default intrinsic width omits spacing. Include it when a toolbar
+/// measures its natural width, so the final control is not forced to wrap.
+class ToolbarWrap extends Wrap {
+  const ToolbarWrap({
+    super.key,
+    super.spacing,
+    super.runSpacing,
+    super.alignment,
+    super.crossAxisAlignment,
+    super.children,
+  });
+
+  @override
+  RenderWrap createRenderObject(BuildContext context) => _ToolbarRenderWrap(
+    spacing: spacing,
+    runSpacing: runSpacing,
+    alignment: alignment,
+    crossAxisAlignment: crossAxisAlignment,
+    textDirection: textDirection ?? Directionality.maybeOf(context),
+  );
+}
+
+class _ToolbarRenderWrap extends RenderWrap {
+  _ToolbarRenderWrap({
+    super.spacing,
+    super.runSpacing,
+    super.alignment,
+    super.crossAxisAlignment,
+    super.textDirection,
+  });
+
+  @override
+  double computeMaxIntrinsicWidth(double height) =>
+      super.computeMaxIntrinsicWidth(height) +
+      math.max(0, childCount - 1) * spacing;
+}
 
 class GlassPanel extends StatelessWidget {
   const GlassPanel({
     super.key,
     required this.child,
     this.padding = const EdgeInsets.all(10),
+    this.tintOpacity,
   });
   final Widget child;
   final EdgeInsets padding;
+  final double? tintOpacity;
   @override
   Widget build(BuildContext context) {
     final dark = Theme.of(context).brightness == Brightness.dark;
@@ -37,11 +77,15 @@ class GlassPanel extends StatelessWidget {
                   .withValues(
                     alpha: MediaQuery.highContrastOf(context)
                         ? 1
-                        : (dark ? .70 : .72),
+                        : tintOpacity ?? (dark ? .70 : .72),
                   ),
               borderRadius: BorderRadius.circular(16),
               border: Border.all(
-                color: dark ? const Color(0xff555559) : const Color(0xffdedee2),
+                color: tintOpacity == null || MediaQuery.highContrastOf(context)
+                    ? (dark ? const Color(0xff555559) : const Color(0xffdedee2))
+                    : (dark ? Colors.white : Colors.black).withValues(
+                        alpha: dark ? .20 : .10,
+                      ),
                 width: .7,
               ),
             ),
@@ -211,6 +255,18 @@ class _FineSliderState extends State<FineSlider> {
   @override
   Widget build(BuildContext context) {
     final c = Theme.of(context).colorScheme;
+    void at(double x) {
+      // Read the assigned width at input time, keeping intrinsic layout pure.
+      final box = context.findRenderObject();
+      if (box is! RenderBox || !box.hasSize) return;
+      sliderFocus.requestFocus();
+      change(
+        widget.min +
+            (widget.max - widget.min) *
+                ((x - 9) / math.max(1, box.size.width - 18)).clamp(0, 1),
+      );
+    }
+
     return Semantics(
       label: widget.label,
       slider: true,
@@ -252,39 +308,25 @@ class _FineSliderState extends State<FineSlider> {
             borderRadius: BorderRadius.circular(6),
             border: Border.all(color: focused ? c.primary : Colors.transparent),
           ),
-          child: LayoutBuilder(
-            builder: (context, constraints) {
-              void at(double x) {
-                sliderFocus.requestFocus();
-                change(
-                  widget.min +
-                      (widget.max - widget.min) *
-                          ((x - 9) / math.max(1, constraints.maxWidth - 18))
-                              .clamp(0, 1),
-                );
-              }
-
-              return MouseRegion(
-                cursor: SystemMouseCursors.click,
-                child: GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onTapDown: widget.onChanged == null
-                      ? null
-                      : (d) => at(d.localPosition.dx),
-                  onHorizontalDragUpdate: widget.onChanged == null
-                      ? null
-                      : (d) => at(d.localPosition.dx),
-                  child: CustomPaint(
-                    size: Size(constraints.maxWidth, 30),
-                    painter: _Track(
-                      (widget.value - widget.min) / (widget.max - widget.min),
-                      c.primary,
-                      c.onSurface.withValues(alpha: .15),
-                    ),
-                  ),
+          child: MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTapDown: widget.onChanged == null
+                  ? null
+                  : (d) => at(d.localPosition.dx),
+              onHorizontalDragUpdate: widget.onChanged == null
+                  ? null
+                  : (d) => at(d.localPosition.dx),
+              child: CustomPaint(
+                size: const Size(144, 30),
+                painter: _Track(
+                  (widget.value - widget.min) / (widget.max - widget.min),
+                  c.primary,
+                  c.onSurface.withValues(alpha: .15),
                 ),
-              );
-            },
+              ),
+            ),
           ),
         ),
       ),

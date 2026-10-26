@@ -8,6 +8,7 @@ import 'package:flutter/material.dart' show ThemeMode;
 import 'package:flutter/services.dart';
 
 import 'platform_bridge.dart';
+import 'color_picker.dart';
 
 class Clip {
   const Clip({
@@ -33,6 +34,8 @@ class ClipController extends ChangeNotifier {
   Clip? clip;
   int revision = 0, delay = 0, countdown = 0;
   bool busy = false, ready = false, hotkey = false;
+  bool colorHotkey = false;
+  SampledColor? sampledColor;
   String launchAtLoginStatus = 'disabled';
   bool startupBusy = false;
   bool get launchAtLogin => launchAtLoginStatus == 'enabled';
@@ -48,6 +51,13 @@ class ClipController extends ChangeNotifier {
 
   Future<void> initialize() async {
     DesktopBridge.channel.setMethodCallHandler((call) async {
+      if (call.method == 'pinCreated') {
+        final args = call.arguments as Map;
+        final id = args['id'];
+        if (id != null && args['bytes'] is Uint8List) {
+          unawaited(bridge.recognizePinnedText(id, args['bytes'] as Uint8List));
+        }
+      }
       if (call.method == 'captureRequested' && !busy && ready) {
         await capture(call.arguments as String? ?? 'region');
       }
@@ -62,6 +72,11 @@ class ClipController extends ChangeNotifier {
     });
     try {
       hotkey = await bridge.registerHotkey();
+      try {
+        colorHotkey = await bridge.registerColorHotkey();
+      } catch (_) {
+        colorHotkey = false;
+      }
       directory = await bridge.dataDirectory();
       await Directory(directory!).create(recursive: true);
       final preferences = File('$directory/preferences.json');
@@ -169,7 +184,7 @@ class ClipController extends ChangeNotifier {
   Future<void> capture(String mode) => perform(() async {
     if (!ready) return;
     _cancelled = false;
-    if (delay > 0) {
+    if (delay > 0 && mode != 'color') {
       countdown = delay;
       panel = 'palette';
       await bridge.present('palette');
@@ -210,6 +225,14 @@ class ClipController extends ChangeNotifier {
     }).toList();
     await loadBytes(bytes, mode: mode, windows: windows, screens: screens);
   });
+  Future<void> fixScreenColor(SampledColor sample) async {
+    sampledColor = sample;
+    clip = null;
+    panel = 'color';
+    changed();
+    await bridge.present('color');
+  }
+
   void cancelCountdown() {
     _cancelled = true;
     _timer?.cancel();
@@ -254,6 +277,7 @@ class ClipController extends ChangeNotifier {
     clip = null;
     revision++;
     panel = 'palette';
+    sampledColor = null;
     error = null;
     if (hide) await bridge.dismiss();
     changed();

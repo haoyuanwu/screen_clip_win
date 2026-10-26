@@ -19,6 +19,8 @@ class FakeBridge extends DesktopBridge {
   FakeBridge(this.directory);
   final String directory;
   bool hidden = false, failCopy = false;
+  @override
+  Future<Map<Object?, Object?>?> focusCaptureWindow(int index) async => null;
   bool startupEnabled = false, failStartup = false;
   int startupWrites = 0;
   @override
@@ -89,6 +91,42 @@ Future<ui.Image> sample({int width = 40, int height = 30}) async {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  testWidgets(
+    'Capture permission failure keeps the strip laid out after resize',
+    (tester) async {
+      final controller = ClipController(bridge: FakeBridge('unused'))
+        ..ready = true;
+      addTearDown(controller.dispose);
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = Size.zero;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: ListenableBuilder(
+            listenable: controller,
+            builder: (context, _) => Workspace(controller: controller),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      controller.busy = true;
+      controller.changed();
+      await tester.pumpAndSettle();
+      controller.error = '请在系统设置 → 隐私与安全性 → 屏幕与系统音频录制中允许定格T，然后重新启动应用。';
+      controller.changed();
+      tester.view.physicalSize = const Size(620, 280);
+      await tester.pump();
+      controller.busy = false;
+      controller.changed();
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      expect(find.text('区域截图'), findsOneWidget);
+      await tester.tap(find.byTooltip('关闭提示'));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+    },
+  );
   test(
     'Startup defaults on once and respects disabled state and failures',
     () async {
@@ -120,70 +158,70 @@ void main() {
       }
     },
   );
-  test('Circle and ellipse are foreground annotations; crop stays rectangular and eraser works', () async {
-    final image = await sample(width: 100, height: 80);
-    try {
-      for (final tool in [MarkTool.circle, MarkTool.ellipse]) {
-        final mark = Mark(tool, Colors.red, 3, [
-          const Offset(20, 20),
-          const Offset(80, 60),
-        ]);
-        final box = annotationBounds(mark);
-        expect(box.width == box.height, tool == MarkTool.circle);
-        final reverse = Mark(tool, Colors.red, 3, [
-          const Offset(80, 60),
-          const Offset(20, 20),
-        ]);
-        expect(annotationBounds(reverse).width, box.width);
-        final marks = [
-          mark,
-          Mark(MarkTool.redact, Colors.white, 12, [
-            const Offset(10, 40),
-            const Offset(90, 40),
-          ]),
-        ];
-        Future<ByteData> pixels() async {
-          final png = await renderCapture(
-            image,
-            marks,
-            const Rect.fromLTWH(10, 10, 80, 60),
-          );
-          final codec = await ui.instantiateImageCodec(png);
-          final frame = await codec.getNextFrame();
-          codec.dispose();
-          expect(frame.image.width, 80);
-          expect(frame.image.height, 60);
-          final data = (await frame.image.toByteData())!;
-          frame.image.dispose();
-          return data;
-        }
+  test(
+    'Circle and ellipse are foreground annotations; crop stays rectangular',
+    () async {
+      final image = await sample(width: 100, height: 80);
+      try {
+        for (final tool in [MarkTool.circle, MarkTool.ellipse]) {
+          final mark = Mark(tool, Colors.red, 3, [
+            const Offset(20, 20),
+            const Offset(80, 60),
+          ]);
+          final box = annotationBounds(mark);
+          expect(box.width == box.height, tool == MarkTool.circle);
+          final reverse = Mark(tool, Colors.red, 3, [
+            const Offset(80, 60),
+            const Offset(20, 20),
+          ]);
+          expect(annotationBounds(reverse).width, box.width);
+          final marks = [
+            mark,
+            Mark(MarkTool.redact, Colors.white, 12, [
+              const Offset(10, 40),
+              const Offset(90, 40),
+            ]),
+          ];
+          Future<ByteData> pixels() async {
+            final png = await renderCapture(
+              image,
+              marks,
+              const Rect.fromLTWH(10, 10, 80, 60),
+            );
+            final codec = await ui.instantiateImageCodec(png);
+            final frame = await codec.getNextFrame();
+            codec.dispose();
+            expect(frame.image.width, 80);
+            expect(frame.image.height, 60);
+            final data = (await frame.image.toByteData())!;
+            frame.image.dispose();
+            return data;
+          }
 
-        final before = await pixels();
-        expect(
-          before.getUint8(3),
-          255,
-        ); // Rectangular screenshot retains its corners.
-        final strokePixel =
-            ((box.topCenter.dy.toInt() - 10) * 80 +
-                box.topCenter.dx.toInt() -
-                10) *
-            4;
-        expect(
-          before.getUint8(strokePixel),
-          (Colors.red.toARGB32() >> 16) & 255,
-        );
-        expect(
-          before.getUint8(strokePixel + 1),
-          lessThan(100),
-        ); // Shape stays above blur.
-        marks.add(Mark(MarkTool.erase, Colors.white, 2, [box.topCenter]));
-        final erased = await pixels();
-        expect(erased.getUint8(strokePixel + 1), 255);
+          final before = await pixels();
+          expect(
+            before.getUint8(3),
+            255,
+          ); // Rectangular screenshot retains its corners.
+          final strokePixel =
+              ((box.topCenter.dy.toInt() - 10) * 80 +
+                  box.topCenter.dx.toInt() -
+                  10) *
+              4;
+          expect(
+            before.getUint8(strokePixel),
+            (Colors.red.toARGB32() >> 16) & 255,
+          );
+          expect(
+            before.getUint8(strokePixel + 1),
+            lessThan(100),
+          ); // Shape stays above blur.
+        }
+      } finally {
+        image.dispose();
       }
-    } finally {
-      image.dispose();
-    }
-  });
+    },
+  );
   test('Pin preserves clipboard, supports reduced motion and retains failed session', () async {
     final bridge = FakeBridge('unused');
     final controller = ClipController(bridge: bridge)..ready = true;
@@ -681,9 +719,9 @@ void main() {
       );
       await tester.pumpAndSettle();
       final compactToolbar = tester.getRect(find.byType(GlassPanel).last);
-      expect(compactToolbar.width, lessThanOrEqualTo(480));
+      expect(compactToolbar.width, lessThanOrEqualTo(620 - 24));
       expect(compactToolbar.height, lessThan(100));
-      for (final label in ['箭头 · A', '文字 · T', '隐私画笔 · B', '矩形 · R']) {
+      for (final label in ['箭头 · Q', '文字 · T', '隐私画笔 · B', '矩形 · R']) {
         await tester.tap(find.byTooltip(label));
         await tester.pump(const Duration(milliseconds: 35));
         expect(tester.takeException(), isNull);
@@ -748,10 +786,9 @@ void main() {
           .toList();
       for (final entry in [
         ('画笔 · P', 3.0),
-        ('箭头 · A', 4.8),
+        ('箭头 · Q', 4.8),
         ('矩形 · R', 4.8),
         ('隐私画笔 · B', 27.0),
-        ('橡皮擦 · E', 27.0),
         ('序号', 36.0),
       ]) {
         await tester.tap(find.byTooltip(entry.$1));
@@ -762,14 +799,23 @@ void main() {
         expect(painters().first.diameter, closeTo(entry.$2, .001));
         expect(
           painters().first.color,
-          entry.$1 == '隐私画笔 · B' || entry.$1 == '橡皮擦 · E'
-              ? Colors.white
-              : const Color(0xffd92d3e),
+          entry.$1 == '隐私画笔 · B' ? Colors.white : const Color(0xffd92d3e),
         );
         await mouse.moveTo(const Offset(10, 20));
         await tester.pump();
         expect(painters().length, 1);
       }
+      expect(find.byTooltip('橡皮擦 · E'), findsNothing);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyE);
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .widget<ToolButton>(
+              find.byWidgetPredicate((w) => w is ToolButton && w.label == '序号'),
+            )
+            .selected,
+        isTrue,
+      );
       await tester.tap(find.byTooltip('画笔 · P'));
       await tester.pumpAndSettle();
       await tester.tap(find.byTooltip('标注颜色'));
@@ -788,72 +834,6 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
-  test('Eraser restores source pixels across blur and foreground, without masking future drawing', () async {
-    final recorder = ui.PictureRecorder();
-    final canvas = Canvas(recorder);
-    canvas.drawColor(Colors.white, BlendMode.src);
-    canvas.drawRect(
-      const Rect.fromLTWH(0, 0, 60, 80),
-      Paint()..color = Colors.black,
-    );
-    final picture = recorder.endRecording();
-    final image = await picture.toImage(120, 80);
-    picture.dispose();
-    final marks = [
-      Mark(MarkTool.pen, Colors.red, 5, [
-        const Offset(15, 40),
-        const Offset(100, 40),
-      ]),
-      Mark(MarkTool.rectangle, Colors.blue, 3, [
-        const Offset(25, 15),
-        const Offset(95, 60),
-      ]),
-      Mark(
-        MarkTool.text,
-        Colors.green,
-        3,
-        [const Offset(45, 10)],
-        text: 'X',
-        fontSize: 20,
-        background: Colors.yellow,
-      ),
-      Mark(MarkTool.redact, Colors.white, 4, [
-        const Offset(60, 0),
-        const Offset(60, 79),
-      ]),
-      Mark(MarkTool.erase, Colors.white, 2, [
-        const Offset(60, 0),
-        const Offset(60, 79),
-      ]),
-    ];
-    Future<List<int>> pixel(int x, int y) async {
-      final bytes = await renderCapture(image, marks, null);
-      final codec = await ui.instantiateImageCodec(bytes);
-      final frame = await codec.getNextFrame();
-      final pixels = (await frame.image.toByteData(
-        format: ui.ImageByteFormat.rawRgba,
-      ))!.buffer.asUint8List();
-      final value = pixels.sublist((y * 120 + x) * 4, (y * 120 + x) * 4 + 4);
-      frame.image.dispose();
-      codec.dispose();
-      return value;
-    }
-
-    expect(await pixel(60, 40), [255, 255, 255, 255]);
-    expect(await pixel(60, 20), [255, 255, 255, 255]);
-    expect(await pixel(60, 60), [255, 255, 255, 255]);
-    expect(await pixel(60, 70), [255, 255, 255, 255]);
-    expect(await pixel(85, 40), [244, 67, 54, 255]);
-    expect(await pixel(85, 60), [33, 150, 243, 255]);
-    marks.add(
-      Mark(MarkTool.pen, Colors.green, 4, [
-        const Offset(60, 35),
-        const Offset(60, 45),
-      ]),
-    );
-    expect(await pixel(60, 40), [76, 175, 80, 255]);
-    image.dispose();
-  });
   test('Brush circle center remains transparent', () async {
     final recorder = ui.PictureRecorder();
     final canvas = Canvas(recorder);
@@ -871,86 +851,6 @@ void main() {
     expect(pixels[(20 * 40 + 20) * 4 + 3], 0);
     image.dispose();
   });
-  testWidgets(
-    'Dragging eraser previews local removal and supports undo and redo',
-    (tester) async {
-      tester.view.physicalSize = const Size(620, 480);
-      tester.view.devicePixelRatio = 1;
-      addTearDown(tester.view.resetPhysicalSize);
-      addTearDown(tester.view.resetDevicePixelRatio);
-      final controller = ClipController(bridge: FakeBridge('unused'))
-        ..ready = true;
-      addTearDown(controller.dispose);
-      await tester.runAsync(() async {
-        final image = await sample(width: 620, height: 480);
-        final bytes = (await image.toByteData(format: ui.ImageByteFormat.png))!
-            .buffer
-            .asUint8List();
-        image.dispose();
-        await controller.loadBytes(bytes);
-      });
-      await tester.pumpWidget(
-        MaterialApp(
-          home: ListenableBuilder(
-            listenable: controller,
-            builder: (context, _) => Workspace(controller: controller),
-          ),
-        ),
-      );
-      await tester.runAsync(
-        () => Future<void>.delayed(const Duration(milliseconds: 40)),
-      );
-      await tester.pumpAndSettle();
-      await tester.dragFrom(const Offset(50, 70), const Offset(500, 240));
-      await tester.pumpAndSettle();
-      await tester.tap(find.byTooltip('画笔 · P'));
-      await tester.pumpAndSettle();
-      await tester.dragFrom(const Offset(130, 180), const Offset(240, 0));
-      await tester.pump();
-      SelectionPainter painter() =>
-          tester
-                  .widget<CustomPaint>(
-                    find.byWidgetPredicate(
-                      (w) => w is CustomPaint && w.painter is SelectionPainter,
-                    ),
-                  )
-                  .painter!
-              as SelectionPainter;
-      Future<List<int>> centerPixel() async {
-        late List<int> value;
-        await tester.runAsync(() async {
-          final p = painter();
-          final bytes = await renderCapture(p.image!, p.marks, p.region);
-          final codec = await ui.instantiateImageCodec(bytes);
-          final frame = await codec.getNextFrame();
-          final pixels = (await frame.image.toByteData(
-            format: ui.ImageByteFormat.rawRgba,
-          ))!.buffer.asUint8List();
-          final index = (110 * frame.image.width + 150) * 4;
-          value = pixels.sublist(index, index + 4);
-          frame.image.dispose();
-          codec.dispose();
-        });
-        return value;
-      }
-
-      expect(await centerPixel(), [217, 45, 62, 255]);
-      await tester.sendKeyEvent(LogicalKeyboardKey.keyE);
-      await tester.pumpAndSettle();
-      await tester.dragFrom(const Offset(200, 140), const Offset(0, 80));
-      await tester.pump();
-      expect(painter().marks.last.tool, MarkTool.erase);
-      expect(painter().marks.last.points.length, greaterThan(1));
-      expect(await centerPixel(), [255, 255, 255, 255]);
-      await tester.tap(find.byTooltip('撤销'));
-      await tester.pump();
-      expect(await centerPixel(), [217, 45, 62, 255]);
-      await tester.tap(find.byTooltip('重做'));
-      await tester.pump();
-      expect(await centerPixel(), [255, 255, 255, 255]);
-      expect(tester.takeException(), isNull);
-    },
-  );
   testWidgets(
     'Toolbar keeps its dimensions and all four edges within each monitor',
     (tester) async {
@@ -1014,7 +914,8 @@ void main() {
 
           contained();
           previous ??= toolbar().size;
-          expect(toolbar().size, previous);
+          expect(toolbar().width, closeTo(previous.width, .01));
+          expect(toolbar().height, closeTo(previous.height, .01));
           await tester.tap(find.byTooltip('文字 · T'));
           await tester.pump();
           contained();
@@ -1066,72 +967,85 @@ void main() {
       }
     }
   });
-  test(
-    'Mosaic is local, blocky, below annotations and can be erased',
-    () async {
-      final recorder = ui.PictureRecorder();
-      final canvas = Canvas(recorder);
-      for (int x = 0; x < 126; x++) {
-        canvas.drawRect(
-          Rect.fromLTWH(x.toDouble(), 0, 1, 84),
-          Paint()..color = Color.fromARGB(255, x * 2, x * 2, x * 2),
-        );
-      }
-      final picture = recorder.endRecording();
-      final image = await picture.toImage(126, 84);
-      picture.dispose();
-      final small = await makeMosaicImage(image);
-      final marks = [
-        Mark(MarkTool.mosaic, Colors.white, 4, [
-          const Offset(63, 15),
-          const Offset(63, 75),
-        ]),
-      ];
-      Future<List<int>> pixels({bool cached = false}) async {
-        final bytes = await renderCapture(
-          image,
-          marks,
-          null,
-          mosaic: cached ? small : null,
-        );
-        final codec = await ui.instantiateImageCodec(bytes);
-        final frame = await codec.getNextFrame();
-        final data = (await frame.image.toByteData(
-          format: ui.ImageByteFormat.rawRgba,
-        ))!.buffer.asUint8List().toList();
-        frame.image.dispose();
-        codec.dispose();
-        return data;
-      }
+  test('Mosaic is local, blocky and below annotations', () async {
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+    for (int x = 0; x < 126; x++) {
+      canvas.drawRect(
+        Rect.fromLTWH(x.toDouble(), 0, 1, 84),
+        Paint()..color = Color.fromARGB(255, x * 2, x * 2, x * 2),
+      );
+    }
+    final picture = recorder.endRecording();
+    final image = await picture.toImage(126, 84);
+    picture.dispose();
+    final small = await makeMosaicImage(image);
+    final marks = [
+      Mark(MarkTool.mosaic, Colors.white, 4, [
+        const Offset(63, 15),
+        const Offset(63, 75),
+      ]),
+    ];
+    Future<List<int>> pixels({bool cached = false}) async {
+      final bytes = await renderCapture(
+        image,
+        marks,
+        null,
+        mosaic: cached ? small : null,
+      );
+      final codec = await ui.instantiateImageCodec(bytes);
+      final frame = await codec.getNextFrame();
+      final data = (await frame.image.toByteData(
+        format: ui.ImageByteFormat.rawRgba,
+      ))!.buffer.asUint8List().toList();
+      frame.image.dispose();
+      codec.dispose();
+      return data;
+    }
 
-      List<int> at(List<int> p, int x, int y) =>
-          p.sublist((y * 126 + x) * 4, (y * 126 + x) * 4 + 4);
-      final first = await pixels();
-      expect(at(first, 59, 40), at(first, 63, 40));
-      expect(at(first, 5, 5), [10, 10, 10, 255]);
-      expect(first, await pixels(cached: true));
-      marks.insert(
-        0,
-        Mark(MarkTool.arrow, Colors.red, 4, [
-          const Offset(20, 50),
-          const Offset(100, 50),
-        ]),
-      );
-      final foreground = await pixels();
-      expect(at(foreground, 65, 50), [244, 67, 54, 255]);
-      marks.add(
-        Mark(MarkTool.erase, Colors.white, 1, [
-          const Offset(60, 20),
-          const Offset(60, 70),
-        ]),
-      );
-      final erased = await pixels();
-      expect(at(erased, 60, 40), [120, 120, 120, 255]);
-      expect(at(erased, 60, 50), [120, 120, 120, 255]);
-      small.dispose();
-      image.dispose();
-    },
-  );
+    List<int> at(List<int> p, int x, int y) =>
+        p.sublist((y * 126 + x) * 4, (y * 126 + x) * 4 + 4);
+    final first = await pixels();
+    expect(at(first, 59, 40), at(first, 63, 40));
+    expect(at(first, 5, 5), [10, 10, 10, 255]);
+    expect(first, await pixels(cached: true));
+    marks[0] = Mark(MarkTool.mosaic, Colors.white, 4, [
+      const Offset(90, 70),
+      const Offset(30, 20),
+    ], privacyInteraction: PrivacyInteraction.rectangle);
+    final rectangle = await pixels();
+    expect(at(rectangle, 59, 22), at(rectangle, 63, 22));
+    expect(at(rectangle, 59, 18), [118, 118, 118, 255]);
+    expect(at(rectangle, 28, 40), [56, 56, 56, 255]);
+    expect(at(rectangle, 92, 40), [184, 184, 184, 255]);
+    expect(rectangle, await pixels(cached: true));
+    // A later rectangular blur replaces mosaic only within its own bounds.
+    final blur = Mark(MarkTool.redact, Colors.white, 4, [
+      const Offset(40, 30),
+      const Offset(75, 60),
+    ], privacyInteraction: PrivacyInteraction.rectangle);
+    marks.add(blur);
+    final combined = await pixels();
+    final mosaicMark = marks.removeAt(0);
+    final blurOnly = await pixels();
+    expect(at(combined, 59, 40), at(blurOnly, 59, 40));
+    expect(at(combined, 35, 40), at(rectangle, 35, 40));
+    expect(at(combined, 59, 18), [118, 118, 118, 255]);
+    marks
+      ..clear()
+      ..add(mosaicMark);
+    marks.insert(
+      0,
+      Mark(MarkTool.arrow, Colors.red, 4, [
+        const Offset(20, 50),
+        const Offset(100, 50),
+      ]),
+    );
+    final foreground = await pixels();
+    expect(at(foreground, 65, 50), [244, 67, 54, 255]);
+    small.dispose();
+    image.dispose();
+  });
   testWidgets(
     'One privacy icon switches modes, preserves brush interaction and undo',
     (tester) async {
@@ -1184,6 +1098,7 @@ void main() {
               as SelectionPainter;
       expect(painter().marks.last.tool, MarkTool.mosaic);
       expect(painter().marks.last.points.length, greaterThan(1));
+      expect(painter().marks.last.privacyInteraction, PrivacyInteraction.brush);
       await tester.tap(find.byTooltip('撤销'));
       await tester.pump();
       expect(painter().marks, isEmpty);
@@ -1221,6 +1136,59 @@ void main() {
       expect(cursor.color, Colors.white);
       expect(cursor.diameter, 27);
       await mouse.removePointer();
+      await tester.tap(find.byTooltip('隐私框选模式'));
+      await tester.pumpAndSettle();
+      expect(find.text('拖动框选需要处理的区域'), findsOneWidget);
+      expect(find.byType(FineSlider), findsNothing);
+      final count = painter().marks.length;
+      await tester.tapAt(const Offset(160, 180));
+      await tester.pump();
+      expect(painter().marks.length, count);
+      final drag = await tester.startGesture(const Offset(350, 260));
+      await drag.moveTo(const Offset(300, 220));
+      await tester.pump();
+      expect(
+        painter().active!.privacyInteraction,
+        PrivacyInteraction.rectangle,
+      );
+      await drag.moveTo(const Offset(150, 140));
+      await drag.up();
+      await tester.pump();
+      expect(painter().marks.last.tool, MarkTool.mosaic);
+      expect(painter().marks.last.points.length, 2);
+      expect(
+        painter().marks.last.privacyInteraction,
+        PrivacyInteraction.rectangle,
+      );
+      await tester.tap(find.byTooltip('撤销'));
+      await tester.pump();
+      expect(painter().marks.length, count);
+      await tester.tap(find.byTooltip('重做'));
+      await tester.pump();
+      expect(
+        painter().marks.last.privacyInteraction,
+        PrivacyInteraction.rectangle,
+      );
+      await tester.tap(find.byTooltip('模糊画笔'));
+      await tester.pumpAndSettle();
+      await tester.dragFrom(const Offset(150, 140), const Offset(200, 120));
+      await tester.pump();
+      expect(painter().marks.last.tool, MarkTool.redact);
+      expect(
+        painter().marks.last.privacyInteraction,
+        PrivacyInteraction.rectangle,
+      );
+      await tester.tap(find.byTooltip('隐私画笔模式'));
+      await tester.pumpAndSettle();
+      expect(find.byType(FineSlider), findsOneWidget);
+      await tester.tapAt(const Offset(200, 180));
+      await tester.pump();
+      expect(painter().marks.last.privacyInteraction, PrivacyInteraction.brush);
+      expect(painter().marks.last.points.length, 1);
+      tester.view.physicalSize = const Size(400, 400);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('隐私框选模式'));
+      await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
     },
   );
