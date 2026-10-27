@@ -27,6 +27,8 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
   private var captureMirrorSession = 0
   private var captureMirrors: [CGDirectDisplayID: CaptureMirrorPanel] = [:]
   private var capturePointerMonitor: Any?
+  private var externalReturnObserver: NSObjectProtocol?
+  private var resumeCaptureAfterExternal = false
   private var replacedInstances: [NSRunningApplication] = []
   private var debugReplacementObserver: NSObjectProtocol?
 
@@ -80,6 +82,13 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
     isReleasedWhenClosed = false
     NSApp.setActivationPolicy(.accessory)
     RegisterGeneratedPlugins(registry: controller)
+    externalReturnObserver = NotificationCenter.default.addObserver(
+      forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+        guard let self, self.resumeCaptureAfterExternal, self.captureDesktop != nil else { return }
+        self.resumeCaptureAfterExternal = false
+        self.present("capture")
+        self.channel.invokeMethod("captureWake", arguments: nil)
+      }
     channel = FlutterMethodChannel(name: "screenclip/desktop", binaryMessenger: controller.engine.binaryMessenger)
     channel.setMethodCallHandler { [weak self] call, result in
       guard let self = self else { return }
@@ -272,6 +281,19 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
         }
       case "permissions":
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") { NSWorkspace.shared.open(url) }; result(nil)
+      case "openServiceUrl":
+        guard let value = call.arguments as? String, let url = URL(string: value),
+              ["http", "https"].contains(url.scheme?.lowercased() ?? ""), url.host?.isEmpty == false else {
+          result(FlutterError(code: "url", message: "服务商网址无效", details: nil)); return
+        }
+        if NSWorkspace.shared.open(url) {
+          if self.level == .screenSaver {
+            self.resumeCaptureAfterExternal = true
+            self.orderOut(nil)
+            self.captureMirrors.values.forEach { $0.orderOut(nil) }
+          }
+          result(nil)
+        } else { result(FlutterError(code: "url", message: "无法打开服务商网站", details: nil)) }
       case "openBrowser":
         guard let value = call.arguments as? String, let url = URL(string: value),
               ["http", "https"].contains(url.scheme?.lowercased() ?? ""), url.host?.isEmpty == false else {
@@ -295,6 +317,7 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
     orderOut(nil)
   }
   private func present(_ panel: String) {
+    if panel != "capture" { resumeCaptureAfterExternal = false }
     if panel == "color" {
       clearCaptureMirrors()
       clearCaptureCover()
@@ -318,6 +341,7 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
       styleMask = [.borderless]; level = .screenSaver; collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
       setFrame(captureDesktop?.frame ?? screen.frame, display: false)
       prepareCaptureMirrors()
+      captureMirrors.values.forEach { $0.orderFrontRegardless() }
       if !captureFrameReady, let image = captureBackground, let view = contentView {
         clearCaptureCover()
         let cover = CaptureSnapshotCover(frame: view.bounds)
@@ -343,6 +367,10 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
     styleMask = [.titled, .closable, .miniaturizable, .resizable]; level = .normal
     let size: NSSize
     switch panel {
+    case "translation":
+      let work = (NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) ?? NSScreen.main)?.visibleFrame.size ?? NSSize(width: 1000, height: 800)
+      minSize = NSSize(width: 440, height: 480)
+      size = NSSize(width: min(900, work.width - 32), height: min(660, work.height - 32))
     case "settings": size = NSSize(width: 530, height: 590)
     default: size = NSSize(width: 620, height: 280)
     }
@@ -354,6 +382,7 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
     captureCover = nil
   }
   private func clearCaptureMirrors() {
+    resumeCaptureAfterExternal = false
     captureMirrorSession += 1
     if let monitor = capturePointerMonitor { NSEvent.removeMonitor(monitor) }
     capturePointerMonitor = nil
@@ -601,7 +630,13 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
   @objc private func showPalette() { open("palette") }
   @objc private func showPreferences() { open("settings") }
   @objc private func quit() { captureBackground = nil; channel.invokeMethod("dismissed", arguments: nil); NSApp.terminate(nil) }
-  deinit { if let colorHotkey = colorHotkey { UnregisterEventHotKey(colorHotkey) }; if let hotkey = hotkey { UnregisterEventHotKey(hotkey) }; if let eventHandler = eventHandler { RemoveEventHandler(eventHandler) } }
+  deinit {
+    if let observer = externalReturnObserver { NotificationCenter.default.removeObserver(observer) }
+    if let observer = debugReplacementObserver { DistributedNotificationCenter.default().removeObserver(observer) }
+    if let colorHotkey = colorHotkey { UnregisterEventHotKey(colorHotkey) }
+    if let hotkey = hotkey { UnregisterEventHotKey(hotkey) }
+    if let eventHandler = eventHandler { RemoveEventHandler(eventHandler) }
+  }
 }
 
 /// The cover never takes input away from the editor while its first frame loads.

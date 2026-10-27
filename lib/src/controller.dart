@@ -10,6 +10,7 @@ import 'package:flutter/widgets.dart' show WidgetsBinding;
 
 import 'platform_bridge.dart';
 import 'color_picker.dart';
+import '../translation/controller.dart';
 import 'ui/capture_mirrors.dart'
     show dispatchCapturePointer, resetCaptureMirrors, scheduleCaptureFrame;
 
@@ -33,8 +34,26 @@ class Clip {
 
 /// One frozen screen, edited before confirmation. No capture history or files.
 class ClipController extends ChangeNotifier {
-  ClipController({DesktopBridge? bridge}) : bridge = bridge ?? DesktopBridge();
+  ClipController({DesktopBridge? bridge, TranslationController? translation})
+    : bridge = bridge ?? DesktopBridge(),
+      translation = translation ?? TranslationController();
   final DesktopBridge bridge;
+  final TranslationController translation;
+  bool translationSettingsInitially = false;
+  Future<void> openTranslation({bool settings = false}) async {
+    translationSettingsInitially = settings;
+    panel = 'translation';
+    changed();
+    await bridge.present('translation');
+  }
+
+  Future<void> closeTranslation() async {
+    translation.cancel();
+    panel = 'palette';
+    changed();
+    await bridge.present('palette');
+  }
+
   String? directory, error;
   String panel = 'palette';
   Clip? clip;
@@ -332,6 +351,7 @@ class ClipController extends ChangeNotifier {
   }
 
   Future<void> discard({bool hide = true}) async {
+    translation.cancel();
     resetCaptureMirrors();
     cancelCountdown();
     clip = null;
@@ -372,6 +392,7 @@ class ClipController extends ChangeNotifier {
   });
   @override
   void dispose() {
+    translation.dispose();
     _disposed = true;
     _timer?.cancel();
     _waiting?.complete();

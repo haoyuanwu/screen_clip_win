@@ -9,6 +9,7 @@ import 'editor.dart';
 import 'ui/controls.dart';
 import 'ui/color_preview.dart';
 import 'ui/capture_mirrors.dart';
+import '../translation/ui/translation_panel.dart';
 
 /// Transient app-owned surfaces. Native hosts supply only tray and OS services.
 class Workspace extends StatelessWidget {
@@ -77,6 +78,7 @@ class Workspace extends StatelessWidget {
                     ),
                   Expanded(
                     child: AnimatedSwitcher(
+                      reverseDuration: Duration.zero,
                       duration:
                           (MediaQuery.disableAnimationsOf(context) ||
                               c.panel == 'capture' ||
@@ -102,6 +104,13 @@ class Workspace extends StatelessWidget {
                                   onResample: () => c.capture('color'),
                                 ),
                               ),
+                            )
+                          : c.panel == 'translation'
+                          ? TranslationPanel(
+                              controller: c.translation,
+                              settingsInitially: c.translationSettingsInitially,
+                              onClose: c.closeTranslation,
+                              openUrl: c.bridge.openServiceUrl,
                             )
                           : c.panel == 'settings'
                           ? Preferences(
@@ -162,6 +171,11 @@ class CaptureStrip extends StatelessWidget {
                     ),
                   ),
                 const Spacer(),
+                ToolButton(
+                  label: '文字翻译',
+                  icon: CupertinoIcons.globe,
+                  onPressed: c.busy ? null : c.openTranslation,
+                ),
                 ToolButton(
                   label: '屏幕取色 · Ctrl+Shift+C',
                   icon: Icons.colorize_rounded,
@@ -493,6 +507,15 @@ class Preferences extends StatelessWidget {
               ],
             ),
           ),
+          Padding(
+            padding: const EdgeInsets.only(top: 12),
+            child: ToolButton(
+              label: '翻译渠道与 API Key',
+              icon: CupertinoIcons.globe,
+              onPressed: () => c.openTranslation(settings: true),
+              child: const Text('翻译渠道与 API Key…'),
+            ),
+          ),
           if (Platform.isMacOS)
             Padding(
               padding: const EdgeInsets.only(top: 12),
@@ -504,7 +527,7 @@ class Preferences extends StatelessWidget {
             ),
           const SizedBox(height: 20),
           Text(
-            '图片只在内存中处理，不保存历史、不上传。\n确认后复制到剪贴板；仅主动保存时写入文件。',
+            '图片只在内存中处理，不保存历史、不上传。\n主动翻译时仅发送原文至你配置的渠道。',
             style: TextStyle(
               fontSize: 11,
               height: 1.7,

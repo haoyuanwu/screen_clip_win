@@ -14,6 +14,7 @@ import 'qr_scan.dart';
 import 'ui/qr_overlay.dart';
 import 'color_picker.dart';
 import 'ui/color_preview.dart';
+import '../translation/ui/translation_panel.dart';
 import 'ui/capture_mirrors.dart'
     show markCaptureMirrorsReady, scheduleCaptureFrame;
 
@@ -522,6 +523,33 @@ class CaptureEditor extends StatefulWidget {
 }
 
 class _CaptureEditorState extends State<CaptureEditor> {
+  bool translationOpen = false;
+  void closeTranslation() {
+    widget.controller.translation.cancel();
+    setState(() => translationOpen = false);
+    focus.requestFocus();
+  }
+
+  Future<void> openTranslation() async {
+    if (locked || image == null || region == null) return;
+    commitText();
+    dismissTextPrompt();
+    setState(() => translationOpen = true);
+    await widget.controller.translation.extract(() async {
+      if (ocrSelection?.hasText == true) {
+        return ocrSelection!.selectedText.isEmpty
+            ? ocrSelection!.text
+            : ocrSelection!.selectedText;
+      }
+      final bytes = await renderCapture(image!, marks, region, mosaic: mosaic);
+      final result = await widget.controller.bridge.recognizeText(bytes);
+      final selection = OcrSelection(result);
+      final text = selection.text;
+      selection.dispose();
+      return text;
+    });
+  }
+
   ui.Image? image;
   ui.Image? mosaic;
   MarkTool privacyTool = MarkTool.redact;
@@ -600,6 +628,7 @@ class _CaptureEditorState extends State<CaptureEditor> {
     widget.clip.height.toDouble(),
   );
   bool get locked =>
+      translationOpen ||
       rendering ||
       recognizingText ||
       scanningQr ||
@@ -2511,6 +2540,18 @@ class _CaptureEditorState extends State<CaptureEditor> {
                 )),
               ]),
               toolGroup('隐私与识别', [
+                ToolButton(
+                  size: 28,
+                  label: '翻译选区文字',
+                  icon: CupertinoIcons.globe,
+                  onPressed:
+                      locked ||
+                          image == null ||
+                          region == null ||
+                          active != null
+                      ? null
+                      : openTranslation,
+                ),
                 annotationButton((
                   privacyTool,
                   CupertinoIcons.shield_lefthalf_fill,
@@ -2721,7 +2762,7 @@ class _CaptureEditorState extends State<CaptureEditor> {
   @override
   Widget build(BuildContext context) {
     return CallbackShortcuts(
-      bindings: textAnchor != null
+      bindings: textAnchor != null || translationOpen
           ? {}
           : {
               const SingleActivator(LogicalKeyboardKey.keyI): () =>
@@ -3296,6 +3337,46 @@ class _CaptureEditorState extends State<CaptureEditor> {
                       ),
                     ),
                   ),
+                if (translationOpen) ...[
+                  Positioned.fill(
+                    child: GestureDetector(
+                      onTap: () {},
+                      child: ColoredBox(
+                        color: Colors.black.withValues(alpha: .2),
+                      ),
+                    ),
+                  ),
+                  Positioned.fromRect(
+                    rect: currentScreen.deflate(16),
+                    child: Center(
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(
+                          maxWidth: 780,
+                          maxHeight: 660,
+                        ),
+                        child: TweenAnimationBuilder<double>(
+                          tween: Tween(begin: 0, end: 1),
+                          duration: MediaQuery.disableAnimationsOf(context)
+                              ? Duration.zero
+                              : const Duration(milliseconds: 160),
+                          curve: Curves.easeOutCubic,
+                          builder: (context, value, child) => Opacity(
+                            opacity: value,
+                            child: Transform.scale(
+                              scale: .99 + .01 * value,
+                              child: child,
+                            ),
+                          ),
+                          child: TranslationPanel(
+                            controller: widget.controller.translation,
+                            onClose: closeTranslation,
+                            openUrl: widget.controller.bridge.openServiceUrl,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
                 if (image == null)
                   const Center(child: CircularProgressIndicator()),
                 if (region == null &&
@@ -3330,6 +3411,7 @@ class _CaptureEditorState extends State<CaptureEditor> {
                   ),
                 if (region != null &&
                     dragStart == null &&
+                    !translationOpen &&
                     colorPicker == null &&
                     !preparingColor)
                   Positioned.fill(

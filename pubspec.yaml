@@ -37,6 +37,8 @@ dependencies:
   flutter_zxing: ^3.1.0
   desktop_vision:
     path: packages/desktop_vision
+  http: ^1.6.0
+  flutter_secure_storage: ^11.2.0
 
 dev_dependencies:
   flutter_test:

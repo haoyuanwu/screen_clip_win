@@ -40,6 +40,8 @@ class DesktopBridge {
   Future<List<QrCode>> scanQrCodes(Uint8List bytes) => scanQrImage(bytes);
   Future<void> openBrowser(Uri url) =>
       channel.invokeMethod('openBrowser', url.toString());
+  Future<void> openServiceUrl(Uri url) =>
+      channel.invokeMethod('openServiceUrl', url.toString());
   Future<OcrResult> recognizeText(Uint8List bytes) =>
       DesktopVision.recognizeBytes(
         bytes,

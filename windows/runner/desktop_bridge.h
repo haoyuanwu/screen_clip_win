@@ -30,7 +30,7 @@ class DesktopBridge {
   std::unique_ptr<flutter::MethodChannel<Value>> channel;
   ULONG_PTR gdiplus = 0;
   NOTIFYICONDATAW tray{};
-  bool capture_surface = false, color_surface = false;
+  bool capture_surface = false, color_surface = false, translation_surface = false;
   LONG_PTR original_style = 0, original_exstyle = 0;
   bool capture_pending = false, was_visible = false;
   bool capture_frame_ready = false, capture_presentation_pending = false;
@@ -236,6 +236,14 @@ class DesktopBridge {
           if(png) {void* ptr=GlobalLock(png);if(ptr){memcpy(ptr,bytes.data(),bytes.size());GlobalUnlock(png);if(!SetClipboardData(RegisterClipboardFormatW(L"PNG"),png)) GlobalFree(png);}else GlobalFree(png);}
           CloseClipboard(); stream->Release();
           if(success) result->Success(); else result->Error("clipboard","Could not copy image");
+        } else if(method=="openServiceUrl") {
+          const auto* value=std::get_if<std::string>(call.arguments());
+          if(!value || (value->rfind("https://",0)!=0 && value->rfind("http://",0)!=0)) {result->Error("url","服务商网址无效");return;}
+          if(capture_surface)ShowWindow(owner,SW_HIDE);
+          const auto url=Wide(*value);
+          auto opened=ShellExecuteW(owner,L"open",url.c_str(),nullptr,nullptr,SW_SHOWNORMAL);
+          if(reinterpret_cast<INT_PTR>(opened)<=32) {if(capture_surface)Present("capture");result->Error("url","无法打开服务商网站");}
+          else result->Success();
         } else if(method=="openBrowser") {
           const auto* value=std::get_if<std::string>(call.arguments());
           if(!value || (value->rfind("https://",0)!=0 && value->rfind("http://",0)!=0)) {result->Error("url","二维码内容不是网页链接");return;}
@@ -267,6 +275,7 @@ class DesktopBridge {
     tray.uFlags=NIF_INFO;wcscpy_s(tray.szInfoTitle,L"定格T已就绪");wcscpy_s(tray.szInfo,L"按 Ctrl+Shift+X 截图，右键托盘图标打开标注和设置。");tray.dwInfoFlags=NIIF_INFO;Shell_NotifyIconW(NIM_MODIFY,&tray);
   }
   void Present(const std::string& panel) {
+    translation_surface=panel=="translation";
     if(!original_style){original_style=GetWindowLongPtr(owner,GWL_STYLE);original_exstyle=GetWindowLongPtr(owner,GWL_EXSTYLE);}
     color_surface=panel=="color";
     if(color_surface) {
@@ -288,8 +297,8 @@ class DesktopBridge {
     const HWND foreground=GetForegroundWindow();if(foreground!=owner)before_tray=foreground;
     RestoreFocusedWindow();capture_surface=false;SetWindowLongPtr(owner,GWL_STYLE,original_style);SetWindowLongPtr(owner,GWL_EXSTYLE,original_exstyle);
     SetWindowPos(owner,HWND_NOTOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE|SWP_FRAMECHANGED);
-    int width=panel=="settings"?560:640;
-    int height=panel=="settings"?560:310;
+    int width=panel=="translation"?900:panel=="settings"?560:640;
+    int height=panel=="translation"?660:panel=="settings"?560:310;
     double dpi=GetDpiForWindow(owner)/96.0; RECT frame{0,0,static_cast<LONG>(width*dpi),static_cast<LONG>(height*dpi)};
     AdjustWindowRectEx(&frame,static_cast<DWORD>(GetWindowLongPtr(owner,GWL_STYLE)),FALSE,static_cast<DWORD>(GetWindowLongPtr(owner,GWL_EXSTYLE)));width=frame.right-frame.left;height=frame.bottom-frame.top;
     RECT work{};SystemParametersInfoW(SPI_GETWORKAREA,0,&work,0);
@@ -299,7 +308,7 @@ class DesktopBridge {
   void Open(const std::string& panel) {channel->InvokeMethod("openPanel",std::make_unique<Value>(panel));}
   void Request(const std::string& value) {channel->InvokeMethod("captureRequested",std::make_unique<Value>(value));}
   bool Handle(UINT message, WPARAM wparam, LPARAM lparam) {
-    if(message==WM_GETMINMAXINFO && !capture_surface && !color_surface) {auto info=reinterpret_cast<MINMAXINFO*>(lparam);double dpi=GetDpiForWindow(owner)/96.0;info->ptMinTrackSize={static_cast<LONG>(440*dpi),static_cast<LONG>(310*dpi)};return true;}
+    if(message==WM_GETMINMAXINFO && !capture_surface && !color_surface) {auto info=reinterpret_cast<MINMAXINFO*>(lparam);double dpi=GetDpiForWindow(owner)/96.0;info->ptMinTrackSize={static_cast<LONG>(440*dpi),static_cast<LONG>((translation_surface?480:310)*dpi)};return true;}
     if(message==WM_CLOSE) {channel->InvokeMethod("dismissed",nullptr);ShowWindow(owner,SW_HIDE);RestoreFocusedWindow();return true;}
     if(message==WM_HOTKEY && wparam==73) {Request("color");return true;}
     if(message==WM_HOTKEY && wparam==71) {Request("region");return true;}
