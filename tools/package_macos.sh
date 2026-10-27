@@ -2,7 +2,19 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
-version="${1:?Usage: tools/package_macos.sh VERSION}"
+version="${1:?Usage: tools/package_macos.sh VERSION [arm64|x64|all]}"
+target="${2:-all}"
+if [[ "$target" == all ]]; then
+  "$0" "$version" arm64
+  "$0" "$version" x64
+  (cd "$root/dist" && shasum -a 256 "ScreenClip-$version-macOS-arm64.dmg" "ScreenClip-$version-macOS-x64.dmg" > "SHA256SUMS-$version-macOS.txt")
+  exit 0
+fi
+case "$target" in
+  arm64) arch=arm64 ;;
+  x64) arch=x86_64 ;;
+  *) printf 'Unsupported architecture: %s\n' "$target" >&2; exit 1 ;;
+esac
 source_app="$root/build/macos/Build/Products/Release/screen_clip_win.app"
 test -d "$source_app"
 mkdir -p "$root/dist"
@@ -13,12 +25,31 @@ ln -s /Applications "$stage/Applications"
 
 # Distribution is ad-hoc until a Developer ID identity is configured. Sign
 # nested code first; only the outer application receives sandbox entitlements.
-python3 - "$app" "$root/macos/Runner/Release.entitlements" <<'PY'
+python3 - "$app" "$root/macos/Runner/Release.entitlements" "$arch" <<'PY'
 from pathlib import Path
 import subprocess
 import sys
+import os
 
 app = Path(sys.argv[1])
+# Thin every Mach-O file, including Flutter, plugins and bundled native libraries.
+magics = {b'\xca\xfe\xba\xbe', b'\xbe\xba\xfe\xca', b'\xca\xfe\xba\xbf', b'\xbf\xba\xfe\xca',
+          b'\xcf\xfa\xed\xfe', b'\xfe\xed\xfa\xcf', b'\xce\xfa\xed\xfe', b'\xfe\xed\xfa\xce'}
+for item in app.rglob('*'):
+    if item.is_symlink() or not item.is_file():
+        continue
+    with item.open('rb') as source:
+        if source.read(4) not in magics:
+            continue
+    archs = subprocess.check_output(['lipo', '-archs', str(item)], text=True).split()
+    if sys.argv[3] not in archs:
+        raise RuntimeError(f'{item} does not support {sys.argv[3]}')
+    if len(archs) > 1:
+        mode = item.stat().st_mode
+        output = item.with_name(item.name + '.thin')
+        subprocess.run(['lipo', str(item), '-thin', sys.argv[3], '-output', str(output)], check=True)
+        os.replace(output, item)
+        item.chmod(mode)
 nested = list(app.rglob('*.dylib')) + list(app.rglob('*.framework'))
 for item in sorted(nested, key=lambda p: len(p.parts), reverse=True):
     subprocess.run(['codesign', '--force', '--sign', '-', str(item)], check=True)
@@ -38,5 +69,5 @@ dmg="$root/dist/ScreenClip-$version-macOS-$platform.dmg"
 test ! -e "$dmg"
 hdiutil create -volname "定格T $version" -srcfolder "$stage" -format UDZO -ov "$dmg"
 hdiutil verify "$dmg"
-(cd "$root/dist" && shasum -a 256 "$(basename "$dmg")" > "SHA256SUMS-$version-macOS.txt")
+(cd "$root/dist" && shasum -a 256 "$(basename "$dmg")" > "SHA256SUMS-$version-macOS-$platform.txt")
 printf 'DMG: %s\nArchitecture: %s\n' "$dmg" "$archs"
