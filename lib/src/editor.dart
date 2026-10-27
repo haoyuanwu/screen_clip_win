@@ -14,6 +14,8 @@ import 'qr_scan.dart';
 import 'ui/qr_overlay.dart';
 import 'color_picker.dart';
 import 'ui/color_preview.dart';
+import 'ui/capture_mirrors.dart'
+    show markCaptureMirrorsReady, scheduleCaptureFrame;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
@@ -615,28 +617,62 @@ class _CaptureEditorState extends State<CaptureEditor> {
   Future<void> load([Uint8List? bytes]) async {
     final epoch = ++imageLoadEpoch;
     try {
-      final codec = await ui.instantiateImageCodec(bytes ?? widget.clip.bytes);
-      final frame = await codec.getNextFrame();
-      codec.dispose();
-      final pixels = await makeMosaicImage(frame.image);
+      final ui.Image decoded;
+      if (bytes == null && widget.clip.rgbaPixels != null) {
+        decoded = await ColorPixels(
+          widget.clip.rgbaPixels!,
+          widget.clip.width,
+          widget.clip.height,
+        ).toImage();
+      } else {
+        final codec = await ui.instantiateImageCodec(
+          bytes ?? widget.clip.bytes,
+        );
+        decoded = (await codec.getNextFrame()).image;
+        codec.dispose();
+      }
+      final pixels = widget.clip.mode == 'color'
+          ? null
+          : await makeMosaicImage(decoded);
       if (!mounted || epoch != imageLoadEpoch) {
-        pixels.dispose();
-        frame.image.dispose();
+        pixels?.dispose();
+        decoded.dispose();
         return;
       }
       setState(() {
         loadError = null;
         image?.dispose();
         mosaic?.dispose();
-        image = frame.image;
+        image = decoded;
         mosaic = pixels;
       });
+      notifyCaptureFrameReady(epoch);
       if (widget.clip.mode == 'color') startColorPicker(automatic: true);
     } catch (e) {
       if (mounted && epoch == imageLoadEpoch) {
         setState(() => loadError = '屏幕载入失败：$e');
+        notifyCaptureFrameReady(epoch);
       }
     }
+  }
+
+  void notifyCaptureFrameReady(int epoch) {
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted || epoch != imageLoadEpoch) return;
+      try {
+        final accepted = await widget.controller.bridge.captureFrameReady(
+          context.size ?? Size.zero,
+        );
+        // A frame painted before the native resize still has the old viewport.
+        // Keep the snapshot cover until the desktop-sized frame has been built.
+        if (!accepted && mounted && epoch == imageLoadEpoch) {
+          notifyCaptureFrameReady(epoch);
+        } else if (accepted && mounted && epoch == imageLoadEpoch) {
+          markCaptureMirrorsReady();
+        }
+      } catch (_) {}
+    });
+    WidgetsBinding.instance.scheduleWarmUpFrame();
   }
 
   @override
@@ -699,8 +735,17 @@ class _CaptureEditorState extends State<CaptureEditor> {
     });
     final request = ++colorRequest;
     try {
-      final bytes = await renderCapture(image!, marks, bounds, mosaic: mosaic);
-      final pixels = await ColorPixels.fromPng(bytes);
+      final pixels = marks.isEmpty
+          ? widget.clip.rgbaPixels != null
+                ? ColorPixels(
+                    widget.clip.rgbaPixels!,
+                    widget.clip.width,
+                    widget.clip.height,
+                  )
+                : await ColorPixels.fromImage(image!)
+          : await ColorPixels.fromPng(
+              await renderCapture(image!, marks, bounds, mosaic: mosaic),
+            );
       if (!mounted || request != colorRequest) return;
       final picker = ScreenColorPicker(pixels)..move(cursor ?? bounds.center);
       try {
@@ -722,6 +767,7 @@ class _CaptureEditorState extends State<CaptureEditor> {
     } finally {
       if (mounted && request == colorRequest) {
         setState(() => preparingColor = false);
+        scheduleCaptureFrame();
       }
     }
   }
@@ -1772,7 +1818,10 @@ class _CaptureEditorState extends State<CaptureEditor> {
     for (final r in widget.clip.windows) {
       if (r.contains(p)) return r.intersect(bounds);
     }
-    return bounds.contains(p) ? bounds : null;
+    for (final screen in widget.clip.screens) {
+      if (screen.contains(p)) return screen.intersect(bounds);
+    }
+    return widget.clip.screens.isEmpty && bounds.contains(p) ? bounds : null;
   }
 
   Future<void> selectSmartRegion(Offset point) async {
@@ -1837,7 +1886,10 @@ class _CaptureEditorState extends State<CaptureEditor> {
           loadError = null;
         }
         if (colorPicker != null) {
-          colorPicker!.move(p);
+          if (widget.clip.screens.isEmpty ||
+              widget.clip.screens.any((r) => r.contains(p))) {
+            colorPicker!.move(p);
+          }
           return;
         }
         if (ocrSelection != null && region != null) {
@@ -2837,6 +2889,11 @@ class _CaptureEditorState extends State<CaptureEditor> {
               displayRects,
               viewport,
             );
+            // Native bridges return the primary display first. The session hint
+            // stays there even when the pointer or selection moves to another screen.
+            final hintScreen = displayRects.isEmpty
+                ? viewport
+                : displayRects.first.intersect(viewport);
             return Stack(
               key: viewportKey,
               children: [
@@ -2986,6 +3043,7 @@ class _CaptureEditorState extends State<CaptureEditor> {
                   Positioned.fill(
                     child: ColorPickerOverlay(
                       picker: colorPicker!,
+                      screens: widget.clip.screens,
                       onClose: closeColorPicker,
                       onPicked: (sample) {
                         if (widget.clip.mode == 'color') {
@@ -3245,9 +3303,9 @@ class _CaptureEditorState extends State<CaptureEditor> {
                     !preparingColor &&
                     widget.clip.mode != 'color')
                   Positioned(
-                    top: 24,
-                    left: 16,
-                    right: 16,
+                    top: hintScreen.top + 24,
+                    left: hintScreen.left + 16,
+                    right: viewport.right - hintScreen.right + 16,
                     child: Center(
                       child: GlassPanel(
                         child: Wrap(

@@ -33,6 +33,7 @@ class DesktopBridge {
   bool capture_surface = false, color_surface = false;
   LONG_PTR original_style = 0, original_exstyle = 0;
   bool capture_pending = false, was_visible = false;
+  bool capture_frame_ready = false, capture_presentation_pending = false;
   RECT selection{}, desktop{};
   HBITMAP background = nullptr;
   std::unique_ptr<Result> pending;
@@ -117,16 +118,21 @@ class DesktopBridge {
           result->Success(Value(RegisterHotKey(owner,73,MOD_CONTROL|MOD_SHIFT|MOD_NOREPEAT,'C')!=0));
         } else if(method=="present") {
           Present(std::get<std::string>(*call.arguments())); result->Success();
+        } else if(method=="captureFrameReady") {
+          capture_frame_ready=true;
+          if(capture_presentation_pending)Present("capture");
+          result->Success();
         } else if(method=="copied") { tray.uFlags=NIF_TIP;wcscpy_s(tray.szTip,L"图片已复制到剪贴板 · Ctrl+Shift+X 再次截图");Shell_NotifyIconW(NIM_MODIFY,&tray);result->Success();
-        } else if(method=="dismiss") { ShowWindow(owner,SW_HIDE);RestoreFocusedWindow();SetWindowPos(owner,HWND_NOTOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE); result->Success();
+        } else if(method=="dismiss") { capture_presentation_pending=false;capture_frame_ready=false;ShowWindow(owner,SW_HIDE);RestoreFocusedWindow();SetWindowPos(owner,HWND_NOTOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE); result->Success();
         } else if(method=="capture") {
           if(pending) {result->Error("busy","Capture already in progress");return;}
           RestoreFocusedWindow();refreshing_selection=false;
+          capture_frame_ready=false;capture_presentation_pending=false;
           previous_foreground=GetForegroundWindow();
           if(previous_foreground==owner) previous_foreground=before_tray;
           mode=std::get<std::string>(*call.arguments()); pending=std::move(result);
           was_visible=IsWindowVisible(owner)!=0; ShowWindow(owner,SW_HIDE);
-          SetTimer(owner,72,220,nullptr); capture_pending=true;
+          DwmFlush();SetTimer(owner,72,16,nullptr); capture_pending=true;
         } else if(method=="nudgeCursor") {
           const auto* args=std::get_if<flutter::EncodableMap>(call.arguments());
           if(!capture_surface || !args || !IsWindowVisible(owner)) {result->Error("cursor","当前无法微调截图光标");return;}
@@ -171,7 +177,7 @@ class DesktopBridge {
           } else RestoreFocusedWindow();
           refreshing_selection=true;pending=std::move(result);
           was_visible=IsWindowVisible(owner)!=0;ShowWindow(owner,SW_HIDE);
-          SetTimer(owner,72,220,nullptr);capture_pending=true;
+          DwmFlush();SetTimer(owner,72,16,nullptr);capture_pending=true;
         } else if(method=="save") {
           const auto& args=std::get<flutter::EncodableMap>(*call.arguments());
           auto bytes=std::get<std::vector<uint8_t>>(args.at(Value("bytes")));
@@ -274,7 +280,9 @@ class DesktopBridge {
     }
     if(panel=="capture") {
       capture_surface=true;SetWindowLongPtr(owner,GWL_STYLE,WS_POPUP);SetWindowLongPtr(owner,GWL_EXSTYLE,WS_EX_TOOLWINDOW|WS_EX_TOPMOST);
-      SetWindowPos(owner,HWND_TOPMOST,desktop.left,desktop.top,desktop.right-desktop.left,desktop.bottom-desktop.top,SWP_FRAMECHANGED|SWP_SHOWWINDOW);
+      SetWindowPos(owner,HWND_TOPMOST,desktop.left,desktop.top,desktop.right-desktop.left,desktop.bottom-desktop.top,SWP_FRAMECHANGED|SWP_NOACTIVATE);
+      if(!capture_frame_ready) {capture_presentation_pending=true;return;}
+      capture_presentation_pending=false;
       ShowWindow(owner,SW_SHOW);SetForegroundWindow(owner);return;
     }
     const HWND foreground=GetForegroundWindow();if(foreground!=owner)before_tray=foreground;
@@ -352,7 +360,9 @@ class DesktopBridge {
           EnumDisplayMonitors(nullptr,nullptr,[](HMONITOR monitor,HDC,LPRECT rectangle,LPARAM data)->BOOL {
             auto context=reinterpret_cast<ScreenContext*>(data);MONITORINFO info{};info.cbSize=sizeof(info);if(!GetMonitorInfoW(monitor,&info))return TRUE;
             const auto& r=info.rcMonitor;const auto& d=context->desktop;
-            context->screens->emplace_back(flutter::EncodableMap{{Value("x"),Value(static_cast<int32_t>(r.left-d.left))},{Value("y"),Value(static_cast<int32_t>(r.top-d.top))},{Value("width"),Value(static_cast<int32_t>(r.right-r.left))},{Value("height"),Value(static_cast<int32_t>(r.bottom-r.top))}});return TRUE;
+            Value display(flutter::EncodableMap{{Value("x"),Value(static_cast<int32_t>(r.left-d.left))},{Value("y"),Value(static_cast<int32_t>(r.top-d.top))},{Value("width"),Value(static_cast<int32_t>(r.right-r.left))},{Value("height"),Value(static_cast<int32_t>(r.bottom-r.top))}});
+            if(info.dwFlags&MONITORINFOF_PRIMARY)context->screens->insert(context->screens->begin(),std::move(display));
+            else context->screens->emplace_back(std::move(display));return TRUE;
           },reinterpret_cast<LPARAM>(&screenContext));
           frame_ok=true;pending->Success(Value(flutter::EncodableMap{{Value("bytes"),Value(bytes)},{Value("windows"),Value(windows)},{Value("screens"),Value(screens)}}));}
         else pending->Error("capture","Could not read screenshot");

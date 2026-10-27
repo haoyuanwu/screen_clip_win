@@ -8,6 +8,7 @@ import 'controller.dart';
 import 'editor.dart';
 import 'ui/controls.dart';
 import 'ui/color_preview.dart';
+import 'ui/capture_mirrors.dart';
 
 /// Transient app-owned surfaces. Native hosts supply only tray and OS services.
 class Workspace extends StatelessWidget {
@@ -18,7 +19,7 @@ class Workspace extends StatelessWidget {
     final c = controller;
     // A hidden desktop window can report zero size before its first presentation.
     if (MediaQuery.sizeOf(context).isEmpty) return const SizedBox.shrink();
-    return CallbackShortcuts(
+    final surface = CallbackShortcuts(
       bindings: {
         const SingleActivator(LogicalKeyboardKey.escape): () {
           if (c.countdown > 0) {
@@ -39,7 +40,9 @@ class Workspace extends StatelessWidget {
         child: Focus(
           autofocus: true,
           child: ColoredBox(
-            color: Theme.of(context).scaffoldBackgroundColor,
+            color: c.panel == 'color' && Platform.isMacOS
+                ? Colors.transparent
+                : Theme.of(context).scaffoldBackgroundColor,
             child: SafeArea(
               top: c.panel != 'capture',
               bottom: c.panel != 'capture',
@@ -117,6 +120,12 @@ class Workspace extends StatelessWidget {
           ),
         ),
       ),
+    );
+    return CaptureMirrors(
+      active: c.panel == 'capture' && c.clip != null,
+      revision: c.revision,
+      colorOnly: c.clip?.mode == 'color',
+      child: surface,
     );
   }
 }

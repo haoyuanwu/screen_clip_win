@@ -69,3 +69,28 @@ assert(pin.highlights.count == 2)
 pin.anchor = 6; pin.extent = 7
 assert(pin.selected == "文")
 print("Pinned OCR: reverse cross-line selection, UTF-16 copying and normalized hit testing passed")
+
+let mainFrame = CGRect(x: 0, y: 0, width: 100, height: 80)
+let leftFrame = CGRect(x: -80, y: 20, width: 80, height: 60)
+let aboveFrame = CGRect(x: 20, y: 80, width: 50, height: 40)
+let desktop = DesktopCaptureGeometry(frames: [mainFrame, leftFrame, aboveFrame], scale: 2)
+assert(!DesktopCaptureGeometry.matchesViewport(CGSize(width: 100, height: 80), contentView: desktop.frame.size),
+  "A texture laid out on just the primary display must not replace the desktop snapshot")
+assert(!DesktopCaptureGeometry.matchesViewport(.zero, contentView: desktop.frame.size))
+assert(DesktopCaptureGeometry.matchesViewport(desktop.frame.size, contentView: desktop.frame.size))
+assert(desktop.frame == CGRect(x: -80, y: 0, width: 180, height: 120))
+assert(desktop.pixelRect(mainFrame) == CGRect(x: 160, y: 80, width: 200, height: 160))
+assert(desktop.pixelRect(leftFrame) == CGRect(x: 0, y: 80, width: 160, height: 120))
+assert(desktop.pixelRect(aboveFrame) == CGRect(x: 200, y: 0, width: 100, height: 80))
+let combined = desktop.composite([
+  (mainFrame, image(width: 200, height: 160, color: (255, 255, 255, 255))),
+  (leftFrame, image(width: 80, height: 60, color: (255, 0, 0, 255))),
+  (aboveFrame, image(width: 100, height: 80, color: (0, 255, 0, 255)))
+])!
+assert(combined.width == 360 && combined.height == 240)
+assert(pixel(combined, 10, 90) == [255, 0, 0, 255])
+assert(pixel(combined, 220, 10) == [0, 255, 0, 255])
+assert(pixel(combined, 170, 100) == [255, 255, 255, 255])
+let clamped = desktop.nearestPixel(CGPoint(x: 10, y: 10), screens: [mainFrame, leftFrame, aboveFrame])
+assert(clamped == CGPoint(x: 10, y: 80))
+print("Multi-display eyedropper: negative origins, screens above primary, mixed scales, colors and gap clamping passed")

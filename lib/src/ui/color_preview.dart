@@ -7,6 +7,8 @@ import 'package:flutter/services.dart';
 import '../color_picker.dart';
 import 'controls.dart';
 
+final liveColorPreviewKey = GlobalKey(debugLabel: 'liveColorPreview');
+
 class ColorPreviewCard extends StatefulWidget {
   const ColorPreviewCard({
     super.key,
@@ -79,6 +81,7 @@ class _ColorPreviewCardState extends State<ColorPreviewCard> {
       ],
     );
     return GlassPanel(
+      shadow: !widget.fixed,
       padding: const EdgeInsets.all(12),
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -217,10 +220,12 @@ class ColorPickerOverlay extends StatelessWidget {
     required this.picker,
     required this.onClose,
     required this.onPicked,
+    this.screens = const [],
   });
   final ScreenColorPicker picker;
   final VoidCallback onClose;
   final ValueChanged<SampledColor> onPicked;
+  final List<Rect> screens;
   @override
   Widget build(BuildContext context) => LayoutBuilder(
     builder: (context, constraints) {
@@ -228,29 +233,32 @@ class ColorPickerOverlay extends StatelessWidget {
         point.dx / constraints.maxWidth * picker.pixels.width,
         point.dy / constraints.maxHeight * picker.pixels.height,
       );
+      void move(Offset local) {
+        final point = source(local);
+        if (screens.isEmpty || screens.any((r) => r.contains(point))) {
+          picker.move(point);
+        }
+      }
+
       return ListenableBuilder(
         listenable: picker,
         builder: (context, _) {
-          final width = math.min(280.0, constraints.maxWidth - 20);
           final x =
               picker.position.dx / picker.pixels.width * constraints.maxWidth;
           final y =
               picker.position.dy / picker.pixels.height * constraints.maxHeight;
-          final left =
-              (x + 20 + width <= constraints.maxWidth ? x + 20 : x - width - 20)
-                  .clamp(
-                    10.0,
-                    math.max(10.0, constraints.maxWidth - width - 10),
-                  );
-          final height = picker.fixed ? 300.0 : 272.0;
-          final top =
-              (y + 20 + height <= constraints.maxHeight
-                      ? y + 20
-                      : y - height - 20)
-                  .clamp(
-                    10.0,
-                    math.max(10.0, constraints.maxHeight - height - 10),
-                  );
+          final viewport = Offset.zero & constraints.biggest;
+          final displays = screens
+              .map(
+                (r) => Rect.fromLTWH(
+                  r.left / picker.pixels.width * constraints.maxWidth,
+                  r.top / picker.pixels.height * constraints.maxHeight,
+                  r.width / picker.pixels.width * constraints.maxWidth,
+                  r.height / picker.pixels.height * constraints.maxHeight,
+                ),
+              )
+              .toList();
+          final display = colorPickerScreen(Offset(x, y), displays, viewport);
           return Stack(
             children: [
               Positioned.fill(
@@ -258,12 +266,17 @@ class ColorPickerOverlay extends StatelessWidget {
                   cursor: picker.fixed
                       ? SystemMouseCursors.basic
                       : SystemMouseCursors.precise,
-                  onHover: (e) => picker.move(source(e.localPosition)),
+                  onHover: (e) => move(e.localPosition),
                   child: Listener(
                     behavior: HitTestBehavior.opaque,
                     onPointerDown: (e) {
                       if (e.buttons == kPrimaryMouseButton && !picker.fixed) {
-                        picker.move(source(e.localPosition));
+                        final point = source(e.localPosition);
+                        if (screens.isNotEmpty &&
+                            !screens.any((r) => r.contains(point))) {
+                          return;
+                        }
+                        picker.move(point);
                         picker.freeze();
                         onPicked(picker.sample);
                       }
@@ -272,17 +285,23 @@ class ColorPickerOverlay extends StatelessWidget {
                   ),
                 ),
               ),
-              Positioned(
-                left: left.toDouble(),
-                top: top.toDouble(),
-                width: width,
-                child: IgnorePointer(
-                  ignoring: !picker.fixed,
-                  child: ColorPreviewCard(
-                    sample: picker.sample,
-                    fixed: picker.fixed,
-                    onClose: onClose,
-                    onResample: picker.fixed ? picker.resume : null,
+              Positioned.fill(
+                child: CustomSingleChildLayout(
+                  delegate: ColorPreviewLayout(
+                    screen: display,
+                    pointer: Offset(x, y),
+                  ),
+                  child: IgnorePointer(
+                    key: liveColorPreviewKey,
+                    ignoring: !picker.fixed,
+                    child: SingleChildScrollView(
+                      child: ColorPreviewCard(
+                        sample: picker.sample,
+                        fixed: picker.fixed,
+                        onClose: onClose,
+                        onResample: picker.fixed ? picker.resume : null,
+                      ),
+                    ),
                   ),
                 ),
               ),
@@ -292,6 +311,58 @@ class ColorPickerOverlay extends StatelessWidget {
       );
     },
   );
+}
+
+Rect colorPickerScreen(Offset point, List<Rect> screens, Rect viewport) {
+  final available = screens
+      .map((r) => r.intersect(viewport))
+      .where((r) => !r.isEmpty)
+      .toList();
+  for (final screen in available) {
+    if (screen.contains(point)) return screen;
+  }
+  if (available.isEmpty) return viewport;
+  double distance(Rect r) =>
+      (Offset(
+                point.dx.clamp(r.left, r.right),
+                point.dy.clamp(r.top, r.bottom),
+              ) -
+              point)
+          .distanceSquared;
+  return available.reduce((a, b) => distance(a) <= distance(b) ? a : b);
+}
+
+/// Use the measured card height, including larger fonts, to avoid screen seams.
+class ColorPreviewLayout extends SingleChildLayoutDelegate {
+  ColorPreviewLayout({required this.screen, required this.pointer});
+  final Rect screen;
+  final Offset pointer;
+  Rect get safe =>
+      screen.deflate(math.min(10, math.min(screen.width, screen.height) / 4));
+  @override
+  BoxConstraints getConstraintsForChild(BoxConstraints constraints) =>
+      BoxConstraints(
+        minWidth: math.min(280, safe.width),
+        maxWidth: math.min(280, safe.width),
+        maxHeight: safe.height,
+      );
+  @override
+  Offset getPositionForChild(Size size, Size childSize) {
+    final x = pointer.dx + 20 + childSize.width <= safe.right
+        ? pointer.dx + 20
+        : pointer.dx - childSize.width - 20;
+    final y = pointer.dy + 20 + childSize.height <= safe.bottom
+        ? pointer.dy + 20
+        : pointer.dy - childSize.height - 20;
+    return Offset(
+      x.clamp(safe.left, math.max(safe.left, safe.right - childSize.width)),
+      y.clamp(safe.top, math.max(safe.top, safe.bottom - childSize.height)),
+    );
+  }
+
+  @override
+  bool shouldRelayout(covariant ColorPreviewLayout oldDelegate) =>
+      screen != oldDelegate.screen || pointer != oldDelegate.pointer;
 }
 
 /// Nearest-neighbor pixel preview shares the exact sRGB sampling buffer.

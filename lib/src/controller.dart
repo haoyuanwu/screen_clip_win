@@ -6,9 +6,12 @@ import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart' show ThemeMode;
 import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart' show WidgetsBinding;
 
 import 'platform_bridge.dart';
 import 'color_picker.dart';
+import 'ui/capture_mirrors.dart'
+    show dispatchCapturePointer, resetCaptureMirrors, scheduleCaptureFrame;
 
 class Clip {
   const Clip({
@@ -18,10 +21,13 @@ class Clip {
     this.mode = 'region',
     this.windows = const [],
     this.screens = const [],
+    this.rgbaPixels,
   });
   final Uint8List bytes;
+  final Uint8List? rgbaPixels;
   final int width, height;
   final String mode;
+  // Screen rectangles use source pixels; the primary display is first.
   final List<ui.Rect> windows, screens;
 }
 
@@ -51,6 +57,16 @@ class ClipController extends ChangeNotifier {
 
   Future<void> initialize() async {
     DesktopBridge.channel.setMethodCallHandler((call) async {
+      if (call.method == 'captureWake' && clip != null && panel == 'capture') {
+        scheduleCaptureFrame();
+        return;
+      }
+      if (call.method == 'capturePointer' &&
+          clip != null &&
+          panel == 'capture') {
+        dispatchCapturePointer(call.arguments as Map);
+        return;
+      }
       if (call.method == 'pinCreated') {
         final args = call.arguments as Map;
         final id = args['id'];
@@ -170,6 +186,10 @@ class ClipController extends ChangeNotifier {
       await operation();
     } on PlatformException catch (e) {
       error = e.message ?? '系统操作失败，请重试';
+      if (e.code == 'permission' && clip == null) {
+        sampledColor = null;
+        panel = 'palette';
+      }
       await bridge.present(panel);
     } catch (e) {
       error = '操作未完成：$e';
@@ -204,7 +224,6 @@ class ClipController extends ChangeNotifier {
     }
     final frame = await bridge.capture(mode);
     if (frame == null) return;
-    final bytes = frame['bytes'] as Uint8List;
     final windows = (frame['windows'] as List? ?? []).map((v) {
       final r = Map<Object?, Object?>.from(v as Map);
       return ui.Rect.fromLTWH(
@@ -223,9 +242,38 @@ class ClipController extends ChangeNotifier {
         (r['height'] as num).toDouble(),
       );
     }).toList();
-    await loadBytes(bytes, mode: mode, windows: windows, screens: screens);
+    if (mode == 'color' && frame['pixels'] is Uint8List) {
+      final pixels = frame['pixels'] as Uint8List;
+      final width = (frame['width'] as num).toInt();
+      final height = (frame['height'] as num).toInt();
+      if (width <= 0 ||
+          height <= 0 ||
+          width * height > 100000000 ||
+          pixels.length != width * height * 4) {
+        throw StateError('取色像素数据无效或屏幕像素过大');
+      }
+      await _presentClip(
+        Clip(
+          bytes: Uint8List(0),
+          width: width,
+          height: height,
+          mode: mode,
+          windows: windows,
+          screens: screens,
+          rgbaPixels: pixels,
+        ),
+      );
+    } else {
+      await loadBytes(
+        frame['bytes'] as Uint8List,
+        mode: mode,
+        windows: windows,
+        screens: screens,
+      );
+    }
   });
   Future<void> fixScreenColor(SampledColor sample) async {
+    resetCaptureMirrors();
     sampledColor = sample;
     clip = null;
     panel = 'color';
@@ -254,25 +302,37 @@ class ClipController extends ChangeNotifier {
       if (image.width * image.height > 100000000) {
         throw StateError('屏幕像素过大，请降低显示器分辨率后重试');
       }
-      clip = Clip(
-        bytes: bytes,
-        width: image.width,
-        height: image.height,
-        mode: mode,
-        windows: windows,
-        screens: screens,
+      await _presentClip(
+        Clip(
+          bytes: bytes,
+          width: image.width,
+          height: image.height,
+          mode: mode,
+          windows: windows,
+          screens: screens,
+        ),
       );
-      revision++;
-      panel = 'capture';
-      changed();
-      await bridge.present('capture');
     } finally {
       image.dispose();
       descriptor.dispose();
     }
   }
 
+  Future<void> _presentClip(Clip next) async {
+    resetCaptureMirrors();
+    clip = next;
+    revision++;
+    panel = 'capture';
+    changed();
+    await bridge.present('capture');
+    // A resident window may have no vsync while hidden.
+    if (!_disposed && hasListeners) {
+      WidgetsBinding.instance.scheduleWarmUpFrame();
+    }
+  }
+
   Future<void> discard({bool hide = true}) async {
+    resetCaptureMirrors();
     cancelCountdown();
     clip = null;
     revision++;

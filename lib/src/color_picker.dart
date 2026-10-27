@@ -24,22 +24,45 @@ class ColorPixels {
   const ColorPixels(this.bytes, this.width, this.height);
   final Uint8List bytes;
   final int width, height;
+  Future<ui.Image> toImage() async {
+    final buffer = await ui.ImmutableBuffer.fromUint8List(bytes);
+    final descriptor = ui.ImageDescriptor.raw(
+      buffer,
+      width: width,
+      height: height,
+      rowBytes: width * 4,
+      pixelFormat: ui.PixelFormat.rgba8888,
+    );
+    final codec = await descriptor.instantiateCodec();
+    try {
+      return (await codec.getNextFrame()).image;
+    } finally {
+      codec.dispose();
+      descriptor.dispose();
+      buffer.dispose();
+    }
+  }
+
   static Future<ColorPixels> fromPng(Uint8List png) async {
     final codec = await ui.instantiateImageCodec(png);
     final image = (await codec.getNextFrame()).image;
     codec.dispose();
     try {
-      // rawRgba produces 8-bit sRGB channels, independent of the screen's DPI.
-      final data = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
-      if (data == null) throw StateError('无法读取屏幕颜色');
-      return ColorPixels(
-        data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes),
-        image.width,
-        image.height,
-      );
+      return await fromImage(image);
     } finally {
       image.dispose();
     }
+  }
+
+  static Future<ColorPixels> fromImage(ui.Image image) async {
+    // rawRgba produces 8-bit sRGB channels, independent of the screen's DPI.
+    final data = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
+    if (data == null) throw StateError('无法读取屏幕颜色');
+    return ColorPixels(
+      data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes),
+      image.width,
+      image.height,
+    );
   }
 
   ColorPixels neighborhood(Offset point, {int radius = 8}) {

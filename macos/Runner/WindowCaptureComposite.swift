@@ -1,6 +1,49 @@
 import CoreGraphics
 import Foundation
 
+/// AppKit screen frames may have negative origins and different backing scales.
+/// A common canvas preserves their desktop arrangement; each screen is sampled
+/// with nearest-neighbor scaling so color values aren't interpolated.
+struct DesktopCaptureGeometry {
+  static func matchesViewport(_ viewport: CGSize, contentView: CGSize) -> Bool {
+    viewport.width > 0 && viewport.height > 0 &&
+      abs(viewport.width - contentView.width) < 1 && abs(viewport.height - contentView.height) < 1
+  }
+  let frame: CGRect
+  let scale: CGFloat
+  init(frames: [CGRect], scale: CGFloat) {
+    frame = frames.reduce(CGRect.null) { $0.union($1) }
+    self.scale = scale
+  }
+  var pixelSize: CGSize { CGSize(width: (frame.width * scale).rounded(), height: (frame.height * scale).rounded()) }
+  func pixelRect(_ screen: CGRect) -> CGRect {
+    CGRect(x: (screen.minX - frame.minX) * scale, y: (frame.maxY - screen.maxY) * scale,
+      width: screen.width * scale, height: screen.height * scale)
+  }
+  func nearestPixel(_ point: CGPoint, screens: [CGRect]) -> CGPoint {
+    let rects = screens.map { pixelRect($0) }
+    if rects.contains(where: { $0.contains(point) }) { return point }
+    let candidates = rects.map { r in CGPoint(x: min(max(point.x, r.minX), r.maxX - 1),
+      y: min(max(point.y, r.minY), r.maxY - 1)) }
+    return candidates.min { a, b in
+      hypot(a.x - point.x, a.y - point.y) < hypot(b.x - point.x, b.y - point.y)
+    } ?? point
+  }
+  func composite(_ images: [(CGRect, CGImage)]) -> CGImage? {
+    guard !frame.isNull, let context = CGContext(data: nil, width: Int(pixelSize.width), height: Int(pixelSize.height),
+      bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+    context.setFillColor(CGColor(gray: 0, alpha: 1))
+    context.fill(CGRect(origin: .zero, size: pixelSize))
+    context.interpolationQuality = .none
+    for (screen, image) in images {
+      context.draw(image, in: CGRect(x: (screen.minX - frame.minX) * scale,
+        y: (screen.minY - frame.minY) * scale, width: screen.width * scale, height: screen.height * scale))
+    }
+    return context.makeImage()
+  }
+}
+
 struct PinTextGlyph {
   let start: Int, end: Int, line: Int
   let box: CGRect

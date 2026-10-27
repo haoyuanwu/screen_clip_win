@@ -15,13 +15,63 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
   private var capturePixelWidth: CGFloat = 1
   private var captureWindows: [SCWindow] = []
   private var captureBackground: CGImage?
+  private var captureDesktop: DesktopCaptureGeometry?
   private var cursorNudger = CursorPixelNudger()
   private var pins: [PinnedImagePanel] = []
   override var canBecomeKey: Bool { true }
   override var canBecomeMain: Bool { true }
   private var capturing = false
+  private var captureFrameReady = false
+  private var captureCover: CaptureSnapshotCover?
+  private var capturePresentationEpoch = 0
+  private var captureMirrorSession = 0
+  private var captureMirrors: [CGDirectDisplayID: CaptureMirrorPanel] = [:]
+  private var capturePointerMonitor: Any?
+  private var replacedInstances: [NSRunningApplication] = []
+  private var debugReplacementObserver: NSObjectProtocol?
+
+  override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
+    // AppKit normally keeps a window on one display. A capture surface must
+    // retain the desktop union, including the area above/left of the main screen.
+    if captureDesktop != nil, styleMask.contains(.borderless), level == .screenSaver { return frameRect }
+    return super.constrainFrameRect(frameRect, to: screen)
+  }
 
   override func awakeFromNib() {
+    let current = NSRunningApplication.current
+    #if DEBUG
+    if let id = Bundle.main.bundleIdentifier {
+      let name = Notification.Name("\(id).replaceDebugInstance")
+      debugReplacementObserver = DistributedNotificationCenter.default().addObserver(
+        forName: name, object: nil, queue: .main) { notification in
+          guard let sender = notification.object as? String,
+                sender != String(ProcessInfo.processInfo.processIdentifier) else { return }
+          // Sandboxed apps cannot reliably terminate a sibling process. Let the
+          // old debug process retire itself without waiting on a stale Dart VM.
+          exit(EXIT_SUCCESS)
+        }
+      DistributedNotificationCenter.default().postNotificationName(name,
+        object: String(current.processIdentifier), userInfo: nil, deliverImmediately: true)
+    }
+    #endif
+    if let id = Bundle.main.bundleIdentifier,
+       let existing = NSWorkspace.shared.runningApplications.first(where: {
+         $0.bundleIdentifier == id && $0.processIdentifier != current.processIdentifier && !$0.isTerminated &&
+           ($0.launchDate ?? .distantPast) <= (current.launchDate ?? .distantFuture)
+       }) {
+      #if DEBUG
+      // Flutter run must attach to this new engine. Reusing the old process
+      // makes the new process exit before the debug service can connect.
+      replacedInstances = NSWorkspace.shared.runningApplications.filter {
+        $0.bundleIdentifier == id && $0.processIdentifier != current.processIdentifier && !$0.isTerminated
+      }
+      replacedInstances.forEach { $0.terminate() }
+      #else
+      existing.activate(options: [])
+      NSApp.terminate(nil)
+      return
+      #endif
+    }
     let controller = FlutterViewController()
     contentViewController = controller
     title = "定格T"
@@ -58,11 +108,84 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
           }
         } catch { result(FlutterError(code: "startup", message: "开机启动设置失败：\(error.localizedDescription)", details: nil)) }
       case "registerHotkey":
-        result(self.setupHotkey())
-        DispatchQueue.main.async { self.orderOut(nil) }
+        Task { @MainActor in
+          // Give replaced processes time to unregister their Carbon hotkeys.
+          for _ in 0..<40 {
+            if self.replacedInstances.allSatisfy({ $0.isTerminated }) { break }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+          }
+          #if DEBUG
+          // A prior Flutter engine may no longer answer its graceful quit
+          // handshake. A debug rerun replaces that stale process as well.
+          self.replacedInstances.filter { !$0.isTerminated }.forEach { $0.forceTerminate() }
+          for _ in 0..<10 {
+            if self.replacedInstances.allSatisfy({ $0.isTerminated }) { break }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+          }
+          #endif
+          self.replacedInstances = []
+          result(self.setupHotkey())
+          self.orderOut(nil)
+        }
       case "registerColorHotkey": result(self.setupColorHotkey())
       case "present": self.present(call.arguments as? String ?? "palette"); result(nil)
-      case "dismiss": self.orderOut(nil); self.captureBackground = nil; self.level = .normal; result(nil)
+      case "dismiss": self.clearCaptureMirrors(); self.clearCaptureCover(); self.captureFrameReady = false; self.orderOut(nil); self.captureBackground = nil; self.level = .normal; result(nil)
+      case "captureMirrorLayouts":
+        result(["session": self.captureMirrorSession, "screens": self.captureMirrors.map { id, panel -> [String: Any] in
+          let frame = panel.targetFrame, desktop = self.captureDesktop!.frame
+          return ["displayId": Int(id), "x": frame.minX - desktop.minX,
+            "y": desktop.maxY - frame.maxY, "width": frame.width, "height": frame.height,
+            "scale": panel.pixelScale]
+        }])
+      case "updateCaptureMirror":
+        if let args = call.arguments as? [String: Any],
+           self.captureFrameReady,
+           let session = args["session"] as? Int, session == self.captureMirrorSession,
+           let id = args["displayId"] as? Int, let panel = self.captureMirrors[CGDirectDisplayID(id)],
+           let bytes = args["bytes"] as? FlutterStandardTypedData,
+           let width = args["width"] as? Int, let height = args["height"] as? Int,
+           width > 0, height > 0, width <= 20000, height <= 20000,
+           bytes.data.count == width * height * 4,
+           let provider = CGDataProvider(data: bytes.data as CFData),
+           let image = CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
+             bytesPerRow: width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+             bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+             provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent) {
+          if args["overlay"] as? Bool == true,
+             let left = args["left"] as? Double, let top = args["top"] as? Double,
+             let logicalWidth = args["logicalWidth"] as? Double,
+             let logicalHeight = args["logicalHeight"] as? Double {
+            for other in self.captureMirrors.values where other !== panel { other.clearOverlay() }
+            panel.showOverlay(image, rect: CGRect(x: left, y: top, width: logicalWidth, height: logicalHeight))
+          } else {
+            panel.show(image)
+          }
+        }
+        result(nil)
+      case "captureFrameReady":
+        guard let args = call.arguments as? [String: Double],
+              let width = args["width"], let height = args["height"],
+              DesktopCaptureGeometry.matchesViewport(CGSize(width: width, height: height), contentView: self.contentView?.bounds.size ?? .zero),
+              self.isVisible, self.styleMask.contains(.borderless), self.captureDesktop != nil else {
+          result(false); return
+        }
+        let firstFrame = !self.captureFrameReady
+        self.captureFrameReady = true
+        if firstFrame, let desktop = self.captureDesktop, !self.captureMirrors.isEmpty {
+          let p = NSEvent.mouseLocation
+          self.channel.invokeMethod("capturePointer", arguments: [
+            "x": p.x - desktop.frame.minX, "y": desktop.frame.maxY - p.y,
+            "buttons": 0, "time": ProcessInfo.processInfo.systemUptime,
+            "type": "pointer", "scrollX": 0, "scrollY": 0])
+        }
+        let epoch = self.capturePresentationEpoch
+        // The Dart paint callback precedes rasterization. Keep the native
+        // snapshot for one display interval rather than exposing an old texture.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0 / 60.0) { [weak self] in
+          guard let self, self.capturePresentationEpoch == epoch else { return }
+          self.clearCaptureCover()
+        }
+        result(true)
       case "copied": self.statusItem?.button?.toolTip = "已复制到剪贴板 · Control + Shift + X 再次截图"; result(nil)
       case "capture": self.capture(call.arguments as? String ?? "region", result: result)
       case "focusCaptureWindow":
@@ -76,18 +199,26 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
               self.isVisible, self.styleMask.contains(.borderless) else {
           result(FlutterError(code: "cursor", message: "当前无法微调截图光标", details: nil)); return
         }
-        let scaleX = CGFloat(image.width) / screen.frame.width
-        let scaleY = CGFloat(image.height) / screen.frame.height
-        let screenTop = (NSScreen.screens.first?.frame.maxY ?? 0) - screen.frame.maxY
+        let captureFrame = self.captureDesktop?.frame ?? screen.frame
+        let scaleX = CGFloat(image.width) / captureFrame.width
+        let scaleY = CGFloat(image.height) / captureFrame.height
+        let screenTop = (NSScreen.screens.first?.frame.maxY ?? 0) - captureFrame.maxY
         func observedPixel() -> CGPoint {
           let current = CGEvent(source: nil)?.location ?? CGPoint(x: NSEvent.mouseLocation.x,
             y: (NSScreen.screens.first?.frame.maxY ?? 0) - NSEvent.mouseLocation.y)
-          return CGPoint(x: (current.x - screen.frame.minX) * scaleX,
+          return CGPoint(x: (current.x - captureFrame.minX) * scaleX,
             y: (current.y - screenTop) * scaleY)
         }
-        let point = self.cursorNudger.next(observed: observedPixel(), delta: CGPoint(x: dx, y: dy),
+        let currentCocoa = NSEvent.mouseLocation
+        let activeScreen = NSScreen.screens.first(where: { $0.frame.contains(currentCocoa) }) ?? screen
+        let step = self.captureDesktop == nil ? 1 : scaleX / activeScreen.backingScaleFactor
+        var point = self.cursorNudger.next(observed: observedPixel(), delta: CGPoint(x: CGFloat(dx) * step, y: CGFloat(dy) * step),
           size: CGSize(width: image.width, height: image.height))
-        guard CGWarpMouseCursorPosition(CGPoint(x: screen.frame.minX + point.x / scaleX, y: screenTop + point.y / scaleY)) == .success else {
+        if let desktop = self.captureDesktop {
+          let clamped = desktop.nearestPixel(point, screens: NSScreen.screens.map { $0.frame })
+          if clamped != point { self.cursorNudger = CursorPixelNudger(); point = clamped }
+        }
+        guard CGWarpMouseCursorPosition(CGPoint(x: captureFrame.minX + point.x / scaleX, y: screenTop + point.y / scaleY)) == .success else {
           self.cursorNudger = CursorPixelNudger()
           result(FlutterError(code: "cursor", message: "光标微调失败，请重试", details: nil)); return
         }
@@ -101,11 +232,16 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
               let width = args["width"] as? Double, let height = args["height"] as? Double else {
           result(FlutterError(code: "pin", message: "图片数据无效", details: nil)); return
         }
-        let scale = screen.frame.width / self.capturePixelWidth
-        let source = NSRect(x: screen.frame.minX + x * scale,
-                            y: screen.frame.maxY - (y + height) * scale,
+        let desktopFrame = self.captureDesktop?.frame ?? screen.frame
+        let scale = desktopFrame.width / self.capturePixelWidth
+        let source = NSRect(x: desktopFrame.minX + x * scale,
+                            y: desktopFrame.maxY - (y + height) * scale,
                             width: width * scale, height: height * scale)
-        let pin = PinnedImagePanel(image: image, source: source, screen: screen,
+        let targetScreen = NSScreen.screens.max { a, b in
+          let ra = a.frame.intersection(source), rb = b.frame.intersection(source)
+          return max(0, ra.width * ra.height) < max(0, rb.width * rb.height)
+        } ?? screen
+        let pin = PinnedImagePanel(image: image, source: source, screen: targetScreen,
           animate: (args["animate"] as? Bool ?? true) && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
         pin.onClose = { [weak self, weak pin] in self?.pins.removeAll { $0 === pin } }
         self.pins.append(pin); result(nil)
@@ -126,8 +262,10 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
         let panel = NSSavePanel(); panel.allowedContentTypes = [.png]
         panel.nameFieldStringValue = args["name"] as? String ?? "定格T.png"
         let previousLevel = self.level; self.level = .normal
+        self.captureMirrors.values.forEach { $0.level = .normal }
         panel.beginSheetModal(for: self) { response in
           self.level = previousLevel
+          self.captureMirrors.values.forEach { $0.level = previousLevel }
           guard response == .OK, let url = panel.url else { result(nil); return }
           do { try bytes.data.write(to: url, options: .atomic); result(url.path) }
           catch { result(FlutterError(code: "save", message: error.localizedDescription, details: nil)) }
@@ -141,8 +279,9 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
         }
         let previousLevel = self.level
         self.level = .normal
+        self.captureMirrors.values.forEach { $0.level = .normal }
         if NSWorkspace.shared.open(url) { result(nil) }
-        else { self.level = previousLevel; result(FlutterError(code: "url", message: "无法打开浏览器，请重试", details: nil)) }
+        else { self.level = previousLevel; self.captureMirrors.values.forEach { $0.level = previousLevel }; result(FlutterError(code: "url", message: "无法打开浏览器，请重试", details: nil)) }
       default: result(FlutterMethodNotImplemented)
       }
     }
@@ -157,19 +296,50 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
   }
   private func present(_ panel: String) {
     if panel == "color" {
+      clearCaptureMirrors()
+      clearCaptureCover()
+      captureDesktop = nil
       captureBackground = nil; captureWindows = []; capturedScreen = nil
       styleMask = [.borderless]; level = .floating; minSize = .zero
+      isOpaque = false; backgroundColor = .clear; hasShadow = false
+      (contentViewController as? FlutterViewController)?.backgroundColor = .clear
       collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
       let mouse = NSEvent.mouseLocation
       let work = (NSScreen.screens.first(where: { $0.frame.contains(mouse) }) ?? NSScreen.main)?.visibleFrame ?? CGRect(x: 0, y: 0, width: 1000, height: 800)
       setFrame(CGRect(x: min(max(mouse.x + 16, work.minX), work.maxX - 300), y: min(max(mouse.y - 330, work.minY), work.maxY - 320), width: 300, height: 320), display: true)
       NSApp.activate(ignoringOtherApps: true); makeKeyAndOrderFront(nil); return
     }
+    isOpaque = true; backgroundColor = .windowBackgroundColor; hasShadow = true
+    (contentViewController as? FlutterViewController)?.backgroundColor = .windowBackgroundColor
     minSize = NSSize(width: 440, height: 280)
     if panel == "capture", let screen = capturedScreen {
-      styleMask = [.borderless]; level = .screenSaver; collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-      setFrame(screen.frame, display: true); NSApp.activate(ignoringOtherApps: true); makeKeyAndOrderFront(nil); return
+      animationBehavior = .none
+      acceptsMouseMovedEvents = true
+      styleMask = [.borderless]; level = .screenSaver; collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
+      setFrame(captureDesktop?.frame ?? screen.frame, display: false)
+      prepareCaptureMirrors()
+      if !captureFrameReady, let image = captureBackground, let view = contentView {
+        clearCaptureCover()
+        let cover = CaptureSnapshotCover(frame: view.bounds)
+        cover.image = NSImage(cgImage: image, size: view.bounds.size)
+        cover.imageScaling = .scaleAxesIndependently
+        cover.autoresizingMask = [.width, .height]
+        view.addSubview(cover, positioned: .above, relativeTo: nil)
+        captureCover = cover
+      }
+      // Show the correctly positioned frozen desktop first. A hidden Flutter
+      // window can stop producing frames, so waiting to show it deadlocks.
+      NSApp.activate(ignoringOtherApps: true); makeKeyAndOrderFront(nil)
+      // Activation/Space changes can reposition a newly shown borderless window.
+      // Reapply its desktop origin after ordering, rather than shifting the image.
+      setFrame(captureDesktop?.frame ?? screen.frame, display: true)
+      makeFirstResponder(contentViewController?.view)
+      contentView?.layoutSubtreeIfNeeded()
+      return
     }
+    clearCaptureCover()
+    clearCaptureMirrors()
+    animationBehavior = .default
     styleMask = [.titled, .closable, .miniaturizable, .resizable]; level = .normal
     let size: NSSize
     switch panel {
@@ -178,15 +348,89 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
     }
     setContentSize(size); center(); NSApp.activate(ignoringOtherApps: true); makeKeyAndOrderFront(nil)
   }
+  private func clearCaptureCover() {
+    capturePresentationEpoch += 1
+    captureCover?.removeFromSuperview()
+    captureCover = nil
+  }
+  private func clearCaptureMirrors() {
+    captureMirrorSession += 1
+    if let monitor = capturePointerMonitor { NSEvent.removeMonitor(monitor) }
+    capturePointerMonitor = nil
+    captureMirrors.values.forEach { $0.orderOut(nil) }
+    captureMirrors = [:]
+  }
+  private func prepareCaptureMirrors() {
+    guard captureMirrors.isEmpty, let desktop = captureDesktop, let image = captureBackground else { return }
+    let screens = NSScreen.screens
+    // Never guess which display AppKit assigns the union window to: that can
+    // change with the trigger display and Space. Every display gets a local panel.
+    for screen in screens {
+      guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber,
+            let crop = image.cropping(to: desktop.pixelRect(screen.frame)) else { continue }
+      let panel = CaptureMirrorPanel(screen: screen, image: crop)
+      captureMirrors[number.uint32Value] = panel
+    }
+    if capturePointerMonitor == nil, !captureMirrors.isEmpty {
+      let events: NSEvent.EventTypeMask = [.mouseMoved, .mouseEntered, .mouseExited,
+        .leftMouseDown, .leftMouseUp, .leftMouseDragged, .rightMouseDown, .rightMouseUp,
+        .rightMouseDragged, .otherMouseDown, .otherMouseUp, .otherMouseDragged, .scrollWheel,
+        .keyDown, .keyUp, .flagsChanged]
+      capturePointerMonitor = NSEvent.addLocalMonitorForEvents(matching: events) { [weak self] event in
+        guard let self, self.isVisible, self.level == .screenSaver else { return event }
+        if [.keyDown, .keyUp, .flagsChanged].contains(event.type) {
+          // Preserve Flutter's normal keyboard handling, then wake the backing
+          // scene if the display-local panels made the engine consider it hidden.
+          DispatchQueue.main.async { [weak self] in self?.channel.invokeMethod("captureWake", arguments: nil) }
+          return event
+        }
+        guard event.window == nil || event.window === self || self.captureMirrors.values.contains(where: { event.window === $0 }) else { return event }
+        self.forwardCapturePointer(event)
+        return nil
+      }
+    }
+  }
+  private func forwardCapturePointer(_ event: NSEvent) {
+    guard let desktop = captureDesktop else { return }
+    let p = event.window?.convertPoint(toScreen: event.locationInWindow) ?? NSEvent.mouseLocation
+    var buttons = Int(NSEvent.pressedMouseButtons)
+    switch event.type {
+    case .leftMouseDragged: buttons |= 1
+    case .rightMouseDragged: buttons |= 2
+    case .leftMouseDown: buttons |= 1
+    case .leftMouseUp: buttons &= ~1
+    case .rightMouseDown: buttons |= 2
+    case .rightMouseUp: buttons &= ~2
+    default: break
+    }
+    channel.invokeMethod("capturePointer", arguments: [
+      "x": p.x - desktop.frame.minX, "y": desktop.frame.maxY - p.y,
+      "buttons": buttons, "time": event.timestamp,
+      "type": event.type == .scrollWheel ? "scroll" : "pointer",
+      "scrollX": event.type == .scrollWheel ? -event.scrollingDeltaX : 0,
+      "scrollY": event.type == .scrollWheel ? -event.scrollingDeltaY : 0])
+  }
+  func windowDidMove(_ notification: Notification) {
+    guard isVisible, level == .screenSaver, styleMask.contains(.borderless),
+          let desktop = captureDesktop, frame != desktop.frame else { return }
+    // With separate display Spaces, AppKit may asynchronously add the active
+    // screen's origin after orderFront, even though setFrame reported success.
+    // Correct the actual move notification; fixing it before ordering is too early.
+    setFrame(desktop.frame, display: true)
+  }
   private func open(_ panel: String) { channel.invokeMethod("openPanel", arguments: panel) }
   private func request(_ mode: String) { channel.invokeMethod("captureRequested", arguments: mode) }
   private func setupStatusItem() {
     guard statusItem == nil else { return }
     let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+    // The resident app relies on this entry point even while its window is
+    // hidden. Do not opt into Command-drag removal or quit-on-removal.
+    item.behavior = []
+    item.isVisible = true
     let image = NSImage(systemSymbolName: "crop", accessibilityDescription: "定格T截图"); image?.isTemplate = true
     item.button?.image = image; item.button?.toolTip = "定格T · Control + Shift + X"
     let menu = NSMenu()
-    let actions: [(String, Selector)] = [("区域截图    ⌃⇧X", #selector(captureRegion)), ("屏幕取色    ⌃⇧C", #selector(captureColor)), ("窗口截图", #selector(captureWindow)), ("全屏截图（主显示器）", #selector(captureScreen)), ("截图工具条", #selector(showPalette)), ("偏好设置…", #selector(showPreferences)), ("退出定格T", #selector(quit))]
+    let actions: [(String, Selector)] = [("区域截图    ⌃⇧X", #selector(captureRegion)), ("屏幕取色    ⌃⇧C", #selector(captureColor)), ("窗口截图", #selector(captureWindow)), ("全屏截图（全部显示器）", #selector(captureScreen)), ("截图工具条", #selector(showPalette)), ("偏好设置…", #selector(showPreferences)), ("退出定格T", #selector(quit))]
     for (index, action) in actions.enumerated() {
       if index == 4 || index == 6 { menu.addItem(.separator()) }
       let entry = NSMenuItem(title: action.0, action: action.1, keyEquivalent: ""); entry.target = self; menu.addItem(entry)
@@ -222,9 +466,6 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
           index >= -1, index < captureWindows.count else {
       result(FlutterError(code: "window", message: "智能选区已失效，请重新截图", details: nil)); return
     }
-    guard CGPreflightScreenCaptureAccess() else {
-      result(FlutterError(code: "permission", message: "请在系统设置中允许屏幕录制后重新截图", details: nil)); return
-    }
     if index < 0 {
       guard let data = NSBitmapImageRep(cgImage: background).representation(using: .png, properties: [:]) else {
         result(FlutterError(code: "capture", message: "截图编码失败", details: nil)); return
@@ -236,10 +477,11 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
     Task { @MainActor in
       defer { self.capturing = false }
       do {
-        let scaleX = CGFloat(background.width) / screen.frame.width
-        let scaleY = CGFloat(background.height) / screen.frame.height
-        let screenTop = (NSScreen.screens.first?.frame.maxY ?? 0) - screen.frame.maxY
-        let rect = CGRect(x: (selectedWindow.frame.minX - screen.frame.minX) * scaleX,
+        let desktopFrame = self.captureDesktop?.frame ?? screen.frame
+        let scaleX = CGFloat(background.width) / desktopFrame.width
+        let scaleY = CGFloat(background.height) / desktopFrame.height
+        let screenTop = (NSScreen.screens.first?.frame.maxY ?? 0) - desktopFrame.maxY
+        let rect = CGRect(x: (selectedWindow.frame.minX - desktopFrame.minX) * scaleX,
           y: (selectedWindow.frame.minY - screenTop) * scaleY,
           width: selectedWindow.frame.width * scaleX, height: selectedWindow.frame.height * scaleY)
         let config = SCStreamConfiguration()
@@ -262,53 +504,85 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
   }
   private func capture(_ mode: String, result: @escaping FlutterResult) {
     guard !capturing else { result(FlutterError(code: "busy", message: "截图正在进行", details: nil)); return }
-    guard CGPreflightScreenCaptureAccess() else {
-      CGRequestScreenCaptureAccess()
-      result(FlutterError(code: "permission", message: "请在系统设置 → 隐私与安全性 → 屏幕与系统音频录制中允许定格T，然后重新启动应用。", details: nil)); return
-    }
     capturing = true
-    captureBackground = nil
+    captureFrameReady = false
     cursorNudger = CursorPixelNudger()
-    orderOut(nil)
+    // ScreenCaptureKit excludes our windows, so leave the current UI stable
+    // while preparing the snapshot instead of exposing a 200ms empty desktop.
     Task { @MainActor in
       do {
-        try await Task.sleep(nanoseconds: 200_000_000)
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
         let ownWindows = content.windows.filter { $0.owningApplication?.processID == ProcessInfo.processInfo.processIdentifier }
-        let mouse = NSEvent.mouseLocation
-        let screen = (mode == "screen" ? NSScreen.screens.first : NSScreen.screens.first(where: { $0.frame.contains(mouse) }))
-        guard let screen = screen,
-              let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber,
-              let display = content.displays.first(where: { $0.displayID == number.uint32Value }) else {
-          throw NSError(domain: "ScreenClip", code: 1, userInfo: [NSLocalizedDescriptionKey: "未找到显示器"])
+        let ownApps = content.applications.filter { $0.processID == ProcessInfo.processInfo.processIdentifier }
+        var snapshots: [(CGRect, CGImage)] = []
+        var scale: CGFloat = 1
+        for screen in NSScreen.screens {
+          guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber,
+                let display = content.displays.first(where: { $0.displayID == number.uint32Value }) else { continue }
+          // Exclude the application as a whole: high-level capture panels may
+          // not appear in the shareable window list on every display/Space.
+          let filter = ownApps.isEmpty
+            ? SCContentFilter(display: display, excludingWindows: ownWindows)
+            : SCContentFilter(display: display, excludingApplications: ownApps, exceptingWindows: [])
+          let image = try await self.snapshot(filter)
+          snapshots.append((screen.frame, image))
+          scale = max(scale, CGFloat(image.width) / screen.frame.width)
         }
-        self.capturedScreen = screen
-        let image = try await self.snapshot(SCContentFilter(display: display, excludingWindows: ownWindows))
-        self.capturePixelWidth = CGFloat(image.width)
-        let scaleX = CGFloat(image.width) / screen.frame.width
-        let scaleY = CGFloat(image.height) / screen.frame.height
-        let top = NSScreen.screens.first?.frame.maxY ?? 0
-        let screenTop = top - screen.frame.maxY
+        guard !snapshots.isEmpty else { throw NSError(domain: "ScreenClip", code: 1, userInfo: [NSLocalizedDescriptionKey: "未找到可截图的显示器"]) }
+        let desktop = DesktopCaptureGeometry(frames: snapshots.map { $0.0 }, scale: scale)
+        guard let image = desktop.composite(snapshots) else {
+          throw NSError(domain: "ScreenClip", code: 2, userInfo: [NSLocalizedDescriptionKey: "多屏截图创建失败"])
+        }
+        var payload: [String: Any] = [:]
+        if mode == "color", let pixels = image.dataProvider?.data, let base = CFDataGetBytePtr(pixels) {
+          var rgba = Data(capacity: image.width * image.height * 4)
+          for row in 0..<image.height {
+            rgba.append(base.advanced(by: row * image.bytesPerRow), count: image.width * 4)
+          }
+          payload = ["pixels": FlutterStandardTypedData(bytes: rgba), "width": image.width, "height": image.height]
+        } else if let data = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) {
+          payload["bytes"] = FlutterStandardTypedData(bytes: data)
+        } else {
+          throw NSError(domain: "ScreenClip", code: 2, userInfo: [NSLocalizedDescriptionKey: "截图编码失败"])
+        }
         let ordered = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
         var ranks: [CGWindowID: Int] = [:]
         for (index, info) in ordered.enumerated() {
           if let id = info[kCGWindowNumber as String] as? NSNumber { ranks[id.uint32Value] = index }
         }
-        // Keep WindowServer ordering: the first containing window is frontmost.
-        let candidates = content.windows.sorted { (ranks[$0.windowID] ?? Int.max) < (ranks[$1.windowID] ?? Int.max) }.filter { $0.windowLayer == 0 && $0.frame.width > 1 && $0.frame.height > 1 && $0.owningApplication?.processID != ProcessInfo.processInfo.processIdentifier }
-        self.captureWindows = candidates
-        self.captureBackground = image
+        let candidates = content.windows.sorted { (ranks[$0.windowID] ?? Int.max) < (ranks[$1.windowID] ?? Int.max) }.filter {
+          $0.isOnScreen && $0.windowLayer == 0 && $0.frame.width > 1 && $0.frame.height > 1 &&
+          $0.owningApplication?.processID != ProcessInfo.processInfo.processIdentifier
+        }
+        let top = NSScreen.screens.first?.frame.maxY ?? 0
+        let desktopTop = top - desktop.frame.maxY
         let windows = candidates.map { window -> [String: Double] in
-          ["x": Double((window.frame.minX - screen.frame.minX) * scaleX), "y": Double((window.frame.minY - screenTop) * scaleY), "width": Double(window.frame.width * scaleX), "height": Double(window.frame.height * scaleY)]
+          ["x": Double((window.frame.minX - desktop.frame.minX) * scale),
+           "y": Double((window.frame.minY - desktopTop) * scale),
+           "width": Double(window.frame.width * scale), "height": Double(window.frame.height * scale)]
         }
+        let screens = snapshots.map { entry -> [String: Double] in
+          let rect = desktop.pixelRect(entry.0)
+          return ["x": Double(rect.minX), "y": Double(rect.minY), "width": Double(rect.width), "height": Double(rect.height)]
+        }
+        self.clearCaptureMirrors()
+        self.captureDesktop = desktop
+        self.capturedScreen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) ?? NSScreen.main
+        self.captureBackground = image; self.capturePixelWidth = CGFloat(image.width); self.captureWindows = mode == "color" ? [] : candidates
         self.capturing = false
-        guard let data = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else {
-          result(FlutterError(code: "capture", message: "截图编码失败", details: nil)); return
-        }
-        result(["bytes": FlutterStandardTypedData(bytes: data), "windows": windows, "screens": [["x": 0, "y": 0, "width": image.width, "height": image.height]]])
+        // The next presentation uses a native snapshot while Flutter resumes.
+        self.orderOut(nil)
+        payload["windows"] = mode == "color" ? [] : windows
+        payload["screens"] = screens
+        result(payload)
       } catch {
         self.capturing = false
-        result(FlutterError(code: "capture", message: error.localizedDescription, details: nil))
+        let failure = error as NSError
+        if failure.domain == SCStreamErrorDomain && failure.code == SCStreamError.Code.userDeclined.rawValue {
+          result(FlutterError(code: "permission", message: "当前应用未获准录制屏幕，请在系统设置 → 隐私与安全性 → 屏幕与系统音频录制中确认授权后重试。", details: nil))
+        } else {
+          result(FlutterError(code: "capture", message: error.localizedDescription, details: nil))
+        }
       }
     }
   }
@@ -319,7 +593,7 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
     config.showsCursor = false
     return try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
   }
-  func windowShouldClose(_ sender: NSWindow) -> Bool { channel.invokeMethod("dismissed", arguments: nil); orderOut(nil); captureBackground = nil; return false }
+  func windowShouldClose(_ sender: NSWindow) -> Bool { channel.invokeMethod("dismissed", arguments: nil); clearCaptureMirrors(); clearCaptureCover(); orderOut(nil); captureBackground = nil; return false }
   @objc private func captureColor() { request("color") }
   @objc private func captureRegion() { request("region") }
   @objc private func captureWindow() { request("window") }
@@ -328,6 +602,66 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
   @objc private func showPreferences() { open("settings") }
   @objc private func quit() { captureBackground = nil; channel.invokeMethod("dismissed", arguments: nil); NSApp.terminate(nil) }
   deinit { if let colorHotkey = colorHotkey { UnregisterEventHotKey(colorHotkey) }; if let hotkey = hotkey { UnregisterEventHotKey(hotkey) }; if let eventHandler = eventHandler { RemoveEventHandler(eventHandler) } }
+}
+
+/// The cover never takes input away from the editor while its first frame loads.
+private class CaptureSnapshotCover: NSImageView {
+  override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+/// A display-local surface avoids the single-Space clipping of a desktop-sized
+/// window. Its pixels and input both use the one Flutter editor session.
+private class CaptureMirrorPanel: NSPanel, NSWindowDelegate {
+  let targetFrame: CGRect
+  let pixelScale: CGFloat
+  private let picture = CaptureMirrorView()
+  private let overlay = CaptureSnapshotCover()
+  override var canBecomeKey: Bool { false }
+  override var canBecomeMain: Bool { false }
+  init(screen: NSScreen, image: CGImage) {
+    targetFrame = screen.frame
+    pixelScale = screen.backingScaleFactor
+    super.init(contentRect: NSRect(origin: .zero, size: screen.frame.size),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    isReleasedWhenClosed = false; delegate = self; animationBehavior = .none
+    level = .screenSaver; collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
+    hidesOnDeactivate = false; acceptsMouseMovedEvents = true; hasShadow = false
+    // Keep the underlying editor considered visible while these panels draw it.
+    isOpaque = false; backgroundColor = .clear
+    picture.imageScaling = .scaleAxesIndependently
+    contentView = picture
+    overlay.imageScaling = .scaleAxesIndependently
+    overlay.isHidden = true
+    picture.addSubview(overlay)
+    show(image)
+    setFrame(targetFrame, display: true)
+    orderFrontRegardless()
+  }
+  func show(_ image: CGImage) {
+    clearOverlay()
+    picture.image = NSImage(cgImage: image, size: targetFrame.size)
+  }
+  func clearOverlay() { overlay.isHidden = true; overlay.image = nil }
+  func showOverlay(_ image: CGImage, rect: CGRect) {
+    overlay.frame = CGRect(x: rect.minX, y: targetFrame.height - rect.maxY,
+      width: rect.width, height: rect.height)
+    overlay.image = NSImage(cgImage: image, size: rect.size)
+    overlay.isHidden = false
+  }
+  func windowDidMove(_ notification: Notification) {
+    if frame != targetFrame { setFrame(targetFrame, display: true) }
+  }
+  override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
+}
+
+private class CaptureMirrorView: NSImageView {
+  override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+  override func updateTrackingAreas() {
+    trackingAreas.forEach { removeTrackingArea($0) }
+    addTrackingArea(NSTrackingArea(rect: .zero,
+      options: [.inVisibleRect, .activeAlways, .mouseMoved, .mouseEnteredAndExited], owner: self, userInfo: nil))
+    super.updateTrackingAreas()
+  }
 }
 
 // Session-only image panels. No screenshot files or history are created.

@@ -30,7 +30,123 @@ class PickerBridge extends FakeBridge {
   }
 }
 
+class DeniedPickerBridge extends FakeBridge {
+  DeniedPickerBridge() : super('unused');
+  String? presented;
+  @override
+  Future<Map<Object?, Object?>?> capture(String mode) async =>
+      throw PlatformException(code: 'permission', message: '屏幕录制未授权');
+  @override
+  Future<void> present(String panel) async {
+    presented = panel;
+  }
+}
+
+class RawPickerBridge extends FakeBridge {
+  RawPickerBridge() : super('unused');
+  final pixels = Uint8List.fromList([255, 0, 0, 255, 0, 255, 0, 255]);
+  @override
+  Future<Map<Object?, Object?>?> capture(String mode) async => {
+    'pixels': pixels,
+    'width': 2,
+    'height': 1,
+    'screens': [],
+    'windows': [],
+  };
+}
+
 void main() {
+  test(
+    'Raw color capture bypasses PNG and retains exact sRGB pixels',
+    () async {
+      final bridge = RawPickerBridge();
+      final c = ClipController(bridge: bridge)..ready = true;
+      await c.capture('color');
+      expect(c.error, isNull);
+      expect(c.clip!.bytes, isEmpty);
+      expect(c.clip!.rgbaPixels, same(bridge.pixels));
+      final pixels = ColorPixels(c.clip!.rgbaPixels!, 2, 1);
+      final image = await pixels.toImage();
+      final decoded = await ColorPixels.fromImage(image);
+      expect(decoded.at(Offset.zero).hex, '#FF0000');
+      expect(decoded.at(const Offset(1, 0)).hex, '#00FF00');
+      image.dispose();
+      c.dispose();
+    },
+  );
+  for (final fromFixedCard in [false, true]) {
+    test(
+      'Denied color capture stops before sampling (fixed card: $fromFixedCard)',
+      () async {
+        final bridge = DeniedPickerBridge();
+        final c = ClipController(bridge: bridge)..ready = true;
+        if (fromFixedCard) {
+          c.panel = 'color';
+          c.sampledColor = const SampledColor(255, 0, 0);
+        }
+        await c.capture('color');
+        expect(c.clip, isNull);
+        expect(c.sampledColor, isNull);
+        expect(c.panel, 'palette');
+        expect(bridge.presented, 'palette');
+        expect(c.error, '屏幕录制未授权');
+        expect(c.busy, false);
+        c.dispose();
+      },
+    );
+  }
+  testWidgets(
+    'Live preview and its scroll container never intercept sampling',
+    (tester) async {
+      tester.view.physicalSize = const Size(800, 600);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final bytes = Uint8List(800 * 600 * 4);
+      for (int y = 0; y < 600; y++) {
+        for (int x = 0; x < 800; x++) {
+          final i = (y * 800 + x) * 4;
+          bytes[i] = x % 256;
+          bytes[i + 1] = y % 256;
+          bytes[i + 3] = 255;
+        }
+      }
+      final picker = ScreenColorPicker(ColorPixels(bytes, 800, 600));
+      addTearDown(picker.dispose);
+      int picked = 0;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Material(
+            child: ColorPickerOverlay(
+              picker: picker,
+              onClose: () {},
+              onPicked: (_) => picked++,
+            ),
+          ),
+        ),
+      );
+      final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      await mouse.addPointer(location: const Offset(2, 2));
+      await mouse.moveTo(const Offset(10, 10));
+      await tester.pumpAndSettle();
+      for (int i = 0; i < 5; i++) {
+        // Move into the card's *previous* location before the next layout follows.
+        final target = tester.getRect(find.byType(ColorPreviewCard)).center;
+        await mouse.moveTo(target);
+        await tester.pumpAndSettle();
+        expect((picker.position - target).distance, lessThan(1));
+        expect(picker.sample.hex, picker.pixels.at(target).hex);
+      }
+      final target = tester.getRect(find.byType(ColorPreviewCard)).center;
+      await mouse.moveTo(target);
+      await mouse.down(target);
+      await mouse.up();
+      await tester.pumpAndSettle();
+      expect(picked, 1);
+      expect(picker.fixed, true);
+      await mouse.removePointer();
+    },
+  );
   test('Magnifier centers the sampled pixel, clamps screen edges and freezes with the color', () {
     final bytes = Uint8List(3 * 3 * 4);
     for (int y = 0; y < 3; y++) {
@@ -85,6 +201,81 @@ void main() {
     expect(c.countdown, 0);
     c.dispose();
   });
+  testWidgets(
+    'Preview follows the active display and stays inside it after crossing a screen seam',
+    (tester) async {
+      tester.view.physicalSize = const Size(1200, 700);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final bytes = Uint8List(1200 * 700 * 4);
+      for (int y = 0; y < 700; y++) {
+        for (int x = 0; x < 1200; x++) {
+          final i = (y * 1200 + x) * 4;
+          bytes[i] = x < 600 ? 255 : 0;
+          bytes[i + 1] = x < 600 ? 0 : 255;
+          bytes[i + 3] = 255;
+        }
+      }
+      final picker = ScreenColorPicker(ColorPixels(bytes, 1200, 700));
+      addTearDown(picker.dispose);
+      const screens = [
+        Rect.fromLTWH(0, 0, 600, 700),
+        Rect.fromLTWH(600, 180, 600, 520),
+      ];
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Material(
+            child: ColorPickerOverlay(
+              picker: picker,
+              screens: screens,
+              onClose: () {},
+              onPicked: (_) {},
+            ),
+          ),
+        ),
+      );
+      final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      await mouse.addPointer(location: const Offset(570, 350));
+      await mouse.moveTo(const Offset(590, 350));
+      await tester.pumpAndSettle();
+      Rect card() => tester.getRect(find.byType(ColorPreviewCard));
+      expect(card().left, greaterThanOrEqualTo(0));
+      expect(card().right, lessThanOrEqualTo(600));
+      expect(picker.sample.hex, '#FF0000');
+      await mouse.moveTo(const Offset(610, 350));
+      await tester.pumpAndSettle();
+      expect(card().left, greaterThanOrEqualTo(600));
+      expect(card().right, lessThanOrEqualTo(1200));
+      expect(card().top, greaterThanOrEqualTo(180));
+      expect(card().bottom, lessThanOrEqualTo(700));
+      expect(picker.sample.hex, '#00FF00');
+      final previous = picker.position;
+      await mouse.moveTo(const Offset(700, 80));
+      await tester.pumpAndSettle();
+      expect(
+        picker.position,
+        previous,
+        reason: 'Gaps between displays are not sampleable',
+      );
+      await mouse.moveTo(const Offset(1195, 695));
+      await tester.pumpAndSettle();
+      expect(card().right, lessThanOrEqualTo(1200));
+      expect(card().bottom, lessThanOrEqualTo(700));
+      await mouse.down(const Offset(1195, 695));
+      await mouse.up();
+      await tester.pumpAndSettle();
+      expect(picker.fixed, true);
+      expect(card().bottom, lessThanOrEqualTo(700));
+      tester.platformDispatcher.textScaleFactorTestValue = 1.6;
+      addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+      await tester.pumpAndSettle();
+      expect(card().right, lessThanOrEqualTo(1200));
+      expect(card().bottom, lessThanOrEqualTo(700));
+      await mouse.removePointer();
+      expect(tester.takeException(), isNull);
+    },
+  );
   for (final global in [true, false]) {
     testWidgets('Eyedropper live sample, pin and copy work (global: $global)', (
       tester,
