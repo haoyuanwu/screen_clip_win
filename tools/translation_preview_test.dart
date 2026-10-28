@@ -6,9 +6,11 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter/services.dart';
 import 'package:screen_clip_win/translation/ui/translation_panel.dart';
+import 'package:screen_clip_win/translation/ui/channel_settings.dart';
 import 'package:screen_clip_win/src/theme.dart';
 
 import '../test/translation_test.dart' show configured;
+import '../test/tencent_tmt_test.dart' show tmt;
 
 void main() {
   setUpAll(() async {
@@ -111,5 +113,90 @@ void main() {
         },
       );
     }
+  }
+  for (final dark in [false, true]) {
+    testWidgets('Translation key validation form visual dark=$dark', (
+      tester,
+    ) async {
+      tester.view.physicalSize = const Size(530, 660);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final c = await configured();
+      addTearDown(c.dispose);
+      final key = GlobalKey();
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: screenClipTheme(dark ? Brightness.dark : Brightness.light),
+          home: RepaintBoundary(
+            key: key,
+            child: Scaffold(
+              body: ChannelEditor(
+                channel: c.channels.first,
+                controller: c,
+                onBack: () {},
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final verify = find.widgetWithText(OutlinedButton, '验证 API Key');
+      await tester.ensureVisible(verify);
+      await tester.tap(verify);
+      await tester.pumpAndSettle();
+      expect(find.text('验证通过，当前 Key 与模型可用'), findsOneWidget);
+      await tester.runAsync(() async {
+        final image =
+            await (key.currentContext!.findRenderObject()!
+                    as RenderRepaintBoundary)
+                .toImage();
+        final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
+        final output = Directory('build/translation-previews')
+          ..createSync(recursive: true);
+        await File(
+          '${output.path}/key-validation-${dark ? 'dark' : 'light'}.png',
+        ).writeAsBytes(bytes!.buffer.asUint8List());
+        image.dispose();
+      });
+      expect(tester.takeException(), isNull);
+    });
+  }
+  for (final dark in [false, true]) {
+    testWidgets('Tencent TMT configuration visual dark=$dark', (tester) async {
+      tester.view.physicalSize = const Size(530, 660);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final c = await configured();
+      addTearDown(c.dispose);
+      final key = GlobalKey();
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: screenClipTheme(dark ? Brightness.dark : Brightness.light),
+          home: RepaintBoundary(
+            key: key,
+            child: Scaffold(
+              body: ChannelEditor(channel: tmt(), controller: c, onBack: () {}),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('腾讯云 TMT'), findsWidgets);
+      await tester.runAsync(() async {
+        final image =
+            await (key.currentContext!.findRenderObject()!
+                    as RenderRepaintBoundary)
+                .toImage();
+        final data = await image.toByteData(format: ui.ImageByteFormat.png);
+        final output = Directory('build/translation-previews')
+          ..createSync(recursive: true);
+        await File('${output.path}/tencent-tmt-${dark ? 'dark' : 'light'}.png')
+            .writeAsBytes(data!.buffer.asUint8List());
+        image.dispose();
+      });
+      expect(tester.takeException(), isNull);
+    });
   }
 }

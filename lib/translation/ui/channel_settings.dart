@@ -2,6 +2,9 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
 import '../../src/ui/controls.dart';
+import '../../src/ui/capture_mirrors.dart' show scheduleCaptureFrame;
+import '../service.dart';
+import '../tencent_tmt.dart';
 import '../controller.dart';
 import '../models.dart';
 
@@ -10,9 +13,11 @@ class ChannelSettings extends StatefulWidget {
     super.key,
     required this.controller,
     required this.openUrl,
+    this.onConfigured,
   });
   final TranslationController controller;
   final Future<void> Function(Uri) openUrl;
+  final VoidCallback? onConfigured;
   @override
   State<ChannelSettings> createState() => _ChannelSettingsState();
 }
@@ -29,6 +34,7 @@ class _ChannelSettingsState extends State<ChannelSettings> {
         key: ValueKey(editing?.id ?? 'new'),
         channel: editing,
         controller: c,
+        onSaved: widget.onConfigured,
         onBack: () => setState(() {
           adding = false;
           editing = null;
@@ -121,7 +127,9 @@ class _ChannelSettingsState extends State<ChannelSettings> {
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      channel.model,
+                      channel.isTencentTmt
+                          ? '文本翻译 · ${channel.region}'
+                          : channel.model,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
@@ -172,7 +180,9 @@ class _ChannelSettingsState extends State<ChannelSettings> {
                                 }
                               }
                             },
-                            child: const Text('获取 Key ↗'),
+                            child: Text(
+                              channel.isTencentTmt ? '获取云密钥 ↗' : '获取 Key ↗',
+                            ),
                           ),
                         if (channel.apiKey.isNotEmpty || channel.isCustom)
                           TextButton(
@@ -187,7 +197,12 @@ class _ChannelSettingsState extends State<ChannelSettings> {
                                       await c.removeChannel(channel.id);
                                     } else {
                                       await c.saveChannel(
-                                        channel.copyWith(apiKey: ''),
+                                        channel.copyWith(
+                                          apiKey: '',
+                                          secretId: channel.isTencentTmt
+                                              ? ''
+                                              : null,
+                                        ),
                                       );
                                     }
                                     if (mounted) setState(() => confirm = null);
@@ -240,10 +255,12 @@ class ChannelEditor extends StatefulWidget {
     this.channel,
     required this.controller,
     required this.onBack,
+    this.onSaved,
   });
   final TranslationChannel? channel;
   final TranslationController controller;
   final VoidCallback onBack;
+  final VoidCallback? onSaved;
   @override
   State<ChannelEditor> createState() => _ChannelEditorState();
 }
@@ -256,13 +273,115 @@ class _ChannelEditorState extends State<ChannelEditor> {
   );
   late final model = TextEditingController(text: widget.channel?.model ?? '');
   final keyInput = TextEditingController();
-  String? error;
+  final secretIdInput = TextEditingController();
+  late final regionInput = TextEditingController(
+    text: widget.channel?.region ?? 'ap-guangzhou',
+  );
+  late final projectInput = TextEditingController(
+    text: '${widget.channel?.projectId ?? 0}',
+  );
+  bool get tmt => widget.channel?.isTencentTmt == true;
+  String? error, validationStatus;
+  bool validating = false, validationPassed = false;
+  int validationEpoch = 0;
+  TranslationTask? validationTask;
+
+  void invalidateValidation() {
+    validationEpoch++;
+    validationTask?.cancel();
+    validationTask = null;
+    if (mounted) {
+      setState(() {
+        validating = false;
+        validationPassed = false;
+        validationStatus = null;
+        error = null;
+      });
+    }
+    scheduleCaptureFrame();
+  }
+
+  Future<void> validateKey() async {
+    if (!form.currentState!.validate()) return;
+    final epoch = ++validationEpoch;
+    setState(() {
+      validating = true;
+      validationPassed = false;
+      validationStatus = tmt ? '正在验证云密钥与 TMT 服务…' : '正在验证 Key 与模型…';
+      error = null;
+    });
+    scheduleCaptureFrame();
+    try {
+      final channel =
+          (widget.channel ??
+                  TranslationChannel(
+                    id: 'validation',
+                    name: name.text,
+                    baseUrl: '',
+                    model: '',
+                  ))
+              .copyWith(
+                name: name.text.trim(),
+                baseUrl: endpoint.text.trim(),
+                model: model.text.trim(),
+                apiKey: keyInput.text.trim().isEmpty
+                    ? widget.channel?.apiKey ?? ''
+                    : keyInput.text.trim(),
+                secretId: secretIdInput.text.trim().isEmpty
+                    ? widget.channel?.secretId ?? ''
+                    : secretIdInput.text.trim(),
+                region: regionInput.text.trim(),
+                projectId: int.tryParse(projectInput.text.trim()) ?? 0,
+                isEnabled: true,
+              );
+      final task = validationTask = widget.controller.service.start(
+        text: 'Hello',
+        from: TranslationLanguage.en,
+        to: TranslationLanguage.zh,
+        channel: channel,
+        maxTokens: 64,
+      );
+      await task.future;
+      if (mounted && epoch == validationEpoch) {
+        setState(() {
+          validationPassed = true;
+          validationStatus = tmt ? '验证通过，云密钥与 TMT 服务可用' : '验证通过，当前 Key 与模型可用';
+        });
+      }
+    } on TranslationCancelled {
+      if (mounted && epoch == validationEpoch) {
+        setState(() => validationStatus = '已取消验证');
+      }
+    } on TranslationException catch (e) {
+      if (mounted && epoch == validationEpoch) {
+        setState(() => validationStatus = '验证失败：${e.message}');
+      }
+    } catch (_) {
+      if (mounted && epoch == validationEpoch) {
+        setState(() => validationStatus = '验证失败，请检查网络和渠道配置');
+      }
+    } finally {
+      if (mounted && epoch == validationEpoch) {
+        setState(() {
+          validating = false;
+          validationTask = null;
+        });
+        scheduleCaptureFrame();
+      }
+    }
+  }
+
   @override
   void dispose() {
+    validationEpoch++;
+    validationTask?.cancel();
     name.dispose();
     endpoint.dispose();
     model.dispose();
     keyInput.dispose();
+    secretIdInput.dispose();
+    regionInput.dispose();
+    projectInput.dispose();
     super.dispose();
   }
 
@@ -283,6 +402,11 @@ class _ChannelEditorState extends State<ChannelEditor> {
         name: name.text.trim(),
         baseUrl: endpoint.text.trim(),
         model: model.text.trim(),
+        secretId: secretIdInput.text.trim().isEmpty
+            ? original.secretId
+            : secretIdInput.text.trim(),
+        region: regionInput.text.trim(),
+        projectId: int.tryParse(projectInput.text.trim()) ?? 0,
         apiKey: keyInput.text.trim().isEmpty
             ? original.apiKey
             : keyInput.text.trim(),
@@ -290,7 +414,7 @@ class _ChannelEditorState extends State<ChannelEditor> {
     );
     if (!mounted) return;
     if (saved) {
-      widget.onBack();
+      (widget.onSaved ?? widget.onBack)();
     } else {
       setState(() => error = widget.controller.configError ?? '保存失败，请重试');
     }
@@ -301,6 +425,7 @@ class _ChannelEditorState extends State<ChannelEditor> {
     final c = widget.controller, colors = Theme.of(context).colorScheme;
     return Form(
       key: form,
+      onChanged: invalidateValidation,
       child: ListView(
         padding: const EdgeInsets.all(16),
         children: [
@@ -330,21 +455,81 @@ class _ChannelEditorState extends State<ChannelEditor> {
           TextFormField(
             controller: endpoint,
             autocorrect: false,
-            decoration: const InputDecoration(
+            decoration: InputDecoration(
               labelText: 'API 地址',
-              hintText: 'https://example.com/v1/chat/completions',
-              helperText: '填写完整 Chat Completions 地址；本机服务可用 HTTP',
+              hintText: tmt
+                  ? 'https://tmt.tencentcloudapi.com'
+                  : 'https://example.com/v1/chat/completions',
+              helperText: tmt
+                  ? 'TMT 使用腾讯云 API 3.0，不需要 Chat Completions 路径'
+                  : '填写完整 Chat Completions 地址；本机服务可用 HTTP',
             ),
-            validator: (v) => validateTranslationEndpoint(v ?? ''),
+            validator: (v) => tmt
+                ? validateTmtEndpoint(v ?? '')
+                : validateTranslationEndpoint(v ?? ''),
           ),
           const SizedBox(height: 14),
-          TextFormField(
-            controller: model,
-            autocorrect: false,
-            decoration: const InputDecoration(labelText: '模型名称 / 接入点 ID'),
-            validator: (v) =>
-                v == null || v.trim().isEmpty ? '请填写已开通的模型名称' : null,
-          ),
+          if (tmt) ...[
+            Text(
+              '腾讯云 TMT 使用 SecretId / SecretKey。文本翻译计划于 2030-12-31 停止服务，后续可迁移至 TokenHub。',
+              style: TextStyle(
+                fontSize: 12,
+                height: 1.6,
+                color: colors.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: 14),
+            TextFormField(
+              controller: secretIdInput,
+              obscureText: true,
+              autocorrect: false,
+              enableSuggestions: false,
+              decoration: InputDecoration(
+                labelText: 'SecretId',
+                helperText: widget.channel?.secretId.isNotEmpty == true
+                    ? '已安全保存，留空保留；输入新 ID 可替换'
+                    : '在腾讯云 API 密钥管理中获取',
+              ),
+              validator: (v) =>
+                  (v ?? '').trim().isEmpty &&
+                      widget.channel?.secretId.isNotEmpty != true
+                  ? '请输入 SecretId'
+                  : null,
+            ),
+            const SizedBox(height: 14),
+            TextFormField(
+              controller: regionInput,
+              autocorrect: false,
+              decoration: const InputDecoration(
+                labelText: '地域 Region',
+                helperText: '默认 ap-guangzhou（广州）',
+              ),
+              validator: (v) =>
+                  RegExp(r'^[a-z][a-z0-9]*(?:-[a-z0-9]+)+$')
+                      .hasMatch((v ?? '').trim())
+                  ? null
+                  : '请输入有效地域，例如 ap-guangzhou',
+            ),
+            const SizedBox(height: 14),
+            TextFormField(
+              controller: projectInput,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(
+                labelText: '项目 ID',
+                helperText: '默认项目填 0',
+              ),
+              validator: (v) => (int.tryParse((v ?? '').trim()) ?? -1) < 0
+                  ? '请输入非负整数项目 ID'
+                  : null,
+            ),
+          ] else
+            TextFormField(
+              controller: model,
+              autocorrect: false,
+              decoration: const InputDecoration(labelText: '模型名称 / 接入点 ID'),
+              validator: (v) =>
+                  v == null || v.trim().isEmpty ? '请填写已开通的模型名称' : null,
+            ),
           const SizedBox(height: 14),
           TextFormField(
             controller: keyInput,
@@ -352,16 +537,83 @@ class _ChannelEditorState extends State<ChannelEditor> {
             autocorrect: false,
             enableSuggestions: false,
             decoration: InputDecoration(
-              labelText: 'API Key',
+              labelText: tmt ? 'SecretKey' : 'API Key',
               helperText: widget.channel?.apiKey.isNotEmpty == true
                   ? '${widget.channel!.keyHint}，留空保留；输入新 Key 可替换'
                   : '仅保存在系统钥匙串 / Windows 安全存储',
             ),
             validator: (v) =>
                 (v ?? '').trim().isEmpty && widget.channel?.configured != true
-                ? '请输入 API Key'
+                ? tmt
+                      ? '请输入 SecretKey'
+                      : '请输入 API Key'
                 : null,
           ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              OutlinedButton.icon(
+                onPressed: c.saving || validating ? null : validateKey,
+                icon: validating && !MediaQuery.disableAnimationsOf(context)
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : Icon(
+                        validationPassed
+                            ? CupertinoIcons.checkmark_circle
+                            : CupertinoIcons.checkmark_shield,
+                        size: 17,
+                      ),
+                label: Text(
+                  validating
+                      ? '验证中…'
+                      : tmt
+                      ? '验证云密钥'
+                      : '验证 API Key',
+                ),
+              ),
+              if (validating)
+                TextButton(
+                  onPressed: () {
+                    invalidateValidation();
+                    setState(() => validationStatus = '已取消验证');
+                  },
+                  child: const Text('取消验证'),
+                ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            tmt
+                ? '发送 Hello 文本验证密钥、地域及服务权限，不发送截图内容。'
+                : '发送简短测试验证当前 Key、地址和模型，不发送截图内容。',
+            style: TextStyle(
+              fontSize: 11,
+              height: 1.5,
+              color: colors.onSurfaceVariant,
+            ),
+          ),
+          if (validationStatus != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Semantics(
+                liveRegion: true,
+                child: Text(
+                  validationStatus!,
+                  style: TextStyle(
+                    fontSize: 12,
+                    height: 1.5,
+                    color: validating || validationPassed
+                        ? colors.onSurface
+                        : colors.error,
+                  ),
+                ),
+              ),
+            ),
           if (error != null)
             Padding(
               padding: const EdgeInsets.only(top: 12),
@@ -369,7 +621,7 @@ class _ChannelEditorState extends State<ChannelEditor> {
             ),
           const SizedBox(height: 20),
           FilledButton.icon(
-            onPressed: c.saving ? null : save,
+            onPressed: c.saving || validating ? null : save,
             icon: c.saving
                 ? const SizedBox(
                     width: 16,
@@ -377,7 +629,13 @@ class _ChannelEditorState extends State<ChannelEditor> {
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
                 : const Icon(CupertinoIcons.check_mark, size: 17),
-            label: Text(c.saving ? '安全保存中…' : '保存渠道'),
+            label: Text(
+              c.saving
+                  ? '安全保存中…'
+                  : widget.onSaved != null
+                  ? '保存并继续截图'
+                  : '保存渠道',
+            ),
           ),
         ],
       ),

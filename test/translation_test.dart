@@ -10,8 +10,11 @@ import 'package:screen_clip_win/translation/models.dart';
 import 'package:screen_clip_win/translation/service.dart';
 import 'package:screen_clip_win/translation/controller.dart';
 import 'package:screen_clip_win/translation/ui/translation_panel.dart';
+import 'package:screen_clip_win/translation/ui/reading_panel.dart';
 import 'package:screen_clip_win/src/controller.dart';
+import 'package:screen_clip_win/src/workspace.dart';
 import 'package:screen_clip_win/src/editor.dart';
+import 'package:screen_clip_win/src/ui/ocr_overlay.dart';
 import 'package:screen_clip_win/src/theme.dart';
 import 'package:desktop_vision/desktop_vision.dart';
 
@@ -43,7 +46,13 @@ TranslationService echoService() => TranslationService(
       jsonEncode({
         'choices': [
           {
-            'message': {'content': '你好，世界。\n保留换行。'},
+            'message': {
+              'content':
+                  (jsonDecode(request.body)['messages'][0]['content'] as String)
+                      .contains('JSON 字符串数组')
+                  ? jsonEncode(['你好，世界。'])
+                  : '你好，世界。\n保留换行。',
+            },
             'finish_reason': 'stop',
           },
         ],
@@ -93,6 +102,93 @@ class TranslateOcrBridge extends FakeBridge {
 }
 
 void main() {
+  testWidgets(
+    'Settings exposes translation key configuration and returns to settings',
+    (tester) async {
+      tester.view.physicalSize = const Size(530, 590);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final c =
+          ClipController(
+              bridge: FakeBridge('unused'),
+              translation: await configured(),
+            )
+            ..panel = 'settings'
+            ..ready = true;
+      addTearDown(c.dispose);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: ListenableBuilder(
+            listenable: c,
+            builder: (context, _) => Workspace(controller: c),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('翻译 API Key').hitTestable(), findsOneWidget);
+      await tester.tap(find.byTooltip('配置翻译 API Key'));
+      await tester.pumpAndSettle();
+      expect(c.panel, 'translation');
+      expect(find.text('翻译渠道'), findsOneWidget);
+      expect(find.text('智谱 AI'), findsOneWidget);
+      await tester.tap(find.byTooltip('关闭翻译 · Esc'));
+      await tester.pumpAndSettle();
+      expect(c.panel, 'settings');
+      expect(find.byType(Preferences), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  test('Image translation mark stays inside its box and fits wrapped text', () {
+    final mark = imageTranslationMark(
+      '这是多行的译文，需要完整保留并正确换行。',
+      const Rect.fromLTWH(100, 50, 200, 44),
+    );
+    final painter = mark.textPainter;
+    expect(mark.points.single, const Offset(100, 50));
+    expect(mark.textFrame, const Size(200, 44));
+    expect(painter.height + mark.padding * 2, lessThanOrEqualTo(44.01));
+    expect(mark.background.a, 1);
+    painter.dispose();
+  });
+  test('Batch translation sends one ordered JSON array request', () async {
+    var requests = 0;
+    final service = TranslationService(
+      clientFactory: () => MockClient((request) async {
+        requests++;
+        final body = jsonDecode(request.body);
+        expect(body['messages'][0]['content'], contains('保持元素数量和顺序'));
+        expect(
+          body['messages'][1]['content'],
+          contains(jsonEncode(['Hello', 'World'])),
+        );
+        return http.Response(
+          jsonEncode({
+            'choices': [
+              {
+                'message': {
+                  'content': jsonEncode(['你好', '世界']),
+                },
+              },
+            ],
+          }),
+          200,
+          headers: {'content-type': 'application/json; charset=utf-8'},
+        );
+      }),
+    );
+    final task = service.start(
+      text: 'Hello\nWorld',
+      from: TranslationLanguage.auto,
+      to: TranslationLanguage.zh,
+      channel: readyChannel(),
+      segments: ['Hello', 'World'],
+    );
+    expect(jsonDecode((await task.future).translatedText), ['你好', '世界']);
+    expect(requests, 1);
+  });
+
   TestWidgetsFlutterBinding.ensureInitialized();
   test('All requested presets and languages are configurable; keys stay in secure storage abstraction', () async {
     final storage = MemoryChannels();
@@ -352,52 +448,147 @@ void main() {
       );
     }
   }
-  testWidgets(
-    'Screenshot translation reuses OCR without losing the editable region',
-    (tester) async {
-      tester.view.physicalSize = const Size(1000, 700);
-      tester.view.devicePixelRatio = 1;
-      addTearDown(tester.view.resetPhysicalSize);
-      addTearDown(tester.view.resetDevicePixelRatio);
-      final bridge = TranslateOcrBridge();
-      final translation = await configured();
-      final c = ClipController(bridge: bridge, translation: translation)
-        ..ready = true;
-      addTearDown(c.dispose);
-      late Clip clip;
-      await tester.runAsync(() async {
-        final image = await sample(width: 1000, height: 700);
-        final data = await image.toByteData(format: ui.ImageByteFormat.png);
-        clip = Clip(
-          bytes: data!.buffer.asUint8List(),
-          width: 1000,
-          height: 700,
-          mode: 'screen',
+  for (final mode in ['success', 'missing', 'malformed', 'cancel']) {
+    testWidgets(
+      'Screenshot image translation $mode preserves screenshot and handles state',
+      (tester) async {
+        tester.view.physicalSize = const Size(1000, 700);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        final bridge = TranslateOcrBridge();
+        final lateResponse = Completer<http.Response>();
+        final translation = mode == 'missing'
+            ? TranslationController(storage: MemoryChannels())
+            : await configured(
+                service: mode == 'cancel'
+                    ? TranslationService(
+                        clientFactory: () =>
+                            MockClient((_) => lateResponse.future),
+                      )
+                    : mode == 'malformed'
+                    ? TranslationService(
+                        clientFactory: () => MockClient(
+                          (_) async => http.Response(
+                            jsonEncode({
+                              'choices': [
+                                {
+                                  'message': {'content': '[]'},
+                                },
+                              ],
+                            }),
+                            200,
+                          ),
+                        ),
+                      )
+                    : null,
+              );
+        final c = ClipController(bridge: bridge, translation: translation)
+          ..ready = true;
+        addTearDown(c.dispose);
+        late Clip clip;
+        await tester.runAsync(() async {
+          final image = await sample(width: 1000, height: 700);
+          final data = await image.toByteData(format: ui.ImageByteFormat.png);
+          clip = Clip(
+            bytes: data!.buffer.asUint8List(),
+            width: 1000,
+            height: 700,
+            mode: 'screen',
+          );
+          image.dispose();
+        });
+        await tester.pumpWidget(
+          MaterialApp(
+            home: CaptureEditor(clip: clip, controller: c),
+          ),
         );
-        image.dispose();
-      });
-      await tester.pumpWidget(
-        MaterialApp(
-          home: CaptureEditor(clip: clip, controller: c),
-        ),
-      );
-      await tester.runAsync(
-        () => Future<void>.delayed(const Duration(milliseconds: 100)),
-      );
-      await tester.pumpAndSettle();
-      await tester.tap(find.byTooltip('翻译选区文字'));
-      await tester.runAsync(
-        () => Future<void>.delayed(const Duration(milliseconds: 100)),
-      );
-      await tester.pumpAndSettle();
-      expect(bridge.recognized, 1);
-      expect(translation.sourceText, 'Hello world');
-      expect(find.byType(TranslationPanel), findsOneWidget);
-      await tester.tap(find.byTooltip('关闭翻译 · Esc'));
-      await tester.pumpAndSettle();
-      expect(find.byType(TranslationPanel), findsNothing);
-      expect(find.byType(CaptureEditor), findsOneWidget);
-      expect(tester.takeException(), isNull);
-    },
-  );
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 100)),
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.byTooltip('翻译选区文字'));
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 100)),
+        );
+        if (mode == 'cancel') {
+          await tester.pump();
+          await tester.pump(const Duration(milliseconds: 350));
+          await tester.pump(const Duration(milliseconds: 350));
+          expect(find.byType(OcrScanOverlay), findsOneWidget);
+          await tester.tap(find.byTooltip('取消翻译'));
+          lateResponse.complete(
+            http.Response(
+              jsonEncode({
+                'choices': [
+                  {
+                    'message': {'content': '["late"]'},
+                  },
+                ],
+              }),
+              200,
+            ),
+          );
+          await tester.pumpAndSettle();
+          expect(find.byType(OcrScanOverlay), findsNothing);
+          expect(find.text('翻译完成'), findsNothing);
+          expect(tester.takeException(), isNull);
+          return;
+        }
+        await tester.pumpAndSettle();
+        if (mode == 'missing') {
+          expect(bridge.recognized, 0);
+          expect(find.byType(TranslationPanel), findsOneWidget);
+          expect(find.text('翻译渠道'), findsOneWidget);
+          await tester.tap(find.byTooltip('关闭翻译 · Esc'));
+          await tester.pumpAndSettle();
+          expect(find.byType(TranslationPanel), findsNothing);
+          expect(tester.takeException(), isNull);
+          return;
+        }
+        expect(bridge.recognized, 1);
+        expect(translation.sourceText, 'Hello world');
+        expect(find.byType(TranslationPanel), findsNothing);
+        List<Mark> annotations() => tester
+            .widgetList<CustomPaint>(find.byType(CustomPaint))
+            .map((w) => w.painter)
+            .whereType<SelectionPainter>()
+            .first
+            .marks;
+        if (mode == 'malformed') {
+          expect(annotations(), isEmpty);
+          expect(find.text('翻译未完成'), findsOneWidget);
+          expect(find.byTooltip('重试翻译'), findsOneWidget);
+          expect(tester.takeException(), isNull);
+          return;
+        }
+        expect(annotations().single.text, '你好，世界。');
+        expect(annotations().single.background.a, 1);
+        expect(annotations().single.tool, MarkTool.text);
+        final completed = translation.result;
+        await tester.tap(find.byTooltip('对照阅读'));
+        await tester.pumpAndSettle();
+        expect(find.byType(TranslationReadingPanel), findsOneWidget);
+        expect(
+          annotations(),
+          isEmpty,
+          reason: 'Reading mode hides translation annotations from the capture layer',
+        );
+        expect(identical(translation.result, completed), isTrue);
+        expect(bridge.recognized, 1);
+        await tester.tap(find.byTooltip('关闭对照阅读'));
+        await tester.pumpAndSettle();
+        expect(find.byType(TranslationReadingPanel), findsNothing);
+        expect(annotations().single.text, '你好，世界。');
+
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+        await tester.sendKeyEvent(LogicalKeyboardKey.keyZ);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+        await tester.pumpAndSettle();
+        expect(annotations(), isEmpty);
+        expect(find.byType(CaptureEditor), findsOneWidget);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
 }

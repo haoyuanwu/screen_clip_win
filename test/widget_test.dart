@@ -1144,7 +1144,8 @@ void main() {
       await tester.tapAt(const Offset(160, 180));
       await tester.pump();
       expect(painter().marks.length, count);
-      final drag = await tester.startGesture(const Offset(350, 260));
+      // The toolbar reserves its expanded footprint; draw in the clear area above it.
+      final drag = await tester.startGesture(const Offset(350, 200));
       await drag.moveTo(const Offset(300, 220));
       await tester.pump();
       expect(

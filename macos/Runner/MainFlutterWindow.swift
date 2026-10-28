@@ -513,11 +513,7 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
         let rect = CGRect(x: (selectedWindow.frame.minX - desktopFrame.minX) * scaleX,
           y: (selectedWindow.frame.minY - screenTop) * scaleY,
           width: selectedWindow.frame.width * scaleX, height: selectedWindow.frame.height * scaleY)
-        let config = SCStreamConfiguration()
-        config.width = max(1, Int(rect.width.rounded()))
-        config.height = max(1, Int(rect.height.rounded()))
-        config.showsCursor = false
-        config.ignoreShadowsSingleWindow = true
+        let config = WindowCaptureComposite.configuration(pixelSize: rect.size)
         let windowImage = try await SCScreenshotManager.captureImage(
           contentFilter: SCContentFilter(desktopIndependentWindow: selectedWindow), configuration: config)
         guard let image = WindowCaptureComposite.image(background: background, window: windowImage, pixelRect: rect),

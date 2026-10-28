@@ -25,11 +25,21 @@ class TranslationChannel {
     this.isEnabled = true,
     this.keyUrl = '',
     this.createdAt,
+    this.secretId = '',
+    this.region = 'ap-guangzhou',
+    this.projectId = 0,
   });
   final String id, name, baseUrl, model, apiKey, keyUrl;
   final bool isCustom, isEnabled;
   final DateTime? createdAt;
-  bool get configured => apiKey.trim().isNotEmpty && model.trim().isNotEmpty;
+  final String secretId, region;
+  final int projectId;
+  bool get isTencentTmt => id == 'tencent_tmt';
+  bool get configured =>
+      apiKey.trim().isNotEmpty &&
+      (isTencentTmt
+          ? secretId.trim().isNotEmpty && region.trim().isNotEmpty
+          : model.trim().isNotEmpty);
   String get keyHint => apiKey.isEmpty
       ? '未配置 Key'
       : '已保存 · ••••${apiKey.length <= 4 ? '••••' : apiKey.substring(apiKey.length - 4)}';
@@ -39,6 +49,9 @@ class TranslationChannel {
     String? model,
     String? apiKey,
     bool? isEnabled,
+    String? secretId,
+    String? region,
+    int? projectId,
   }) => TranslationChannel(
     id: id,
     name: name ?? this.name,
@@ -49,6 +62,9 @@ class TranslationChannel {
     isEnabled: isEnabled ?? this.isEnabled,
     keyUrl: keyUrl,
     createdAt: createdAt,
+    secretId: secretId ?? this.secretId,
+    region: region ?? this.region,
+    projectId: projectId ?? this.projectId,
   );
   Map<String, Object?> toJson() => {
     'id': id,
@@ -60,6 +76,9 @@ class TranslationChannel {
     'isEnabled': isEnabled,
     'keyUrl': keyUrl,
     'createdAt': createdAt?.toIso8601String(),
+    'secretId': secretId,
+    'region': region,
+    'projectId': projectId,
   };
   factory TranslationChannel.fromJson(Map<String, dynamic> v) =>
       TranslationChannel(
@@ -72,6 +91,9 @@ class TranslationChannel {
         isEnabled: v['isEnabled'] != false,
         keyUrl: v['keyUrl'] as String? ?? '',
         createdAt: DateTime.tryParse(v['createdAt'] as String? ?? ''),
+        secretId: v['secretId'] as String? ?? '',
+        region: v['region'] as String? ?? 'ap-guangzhou',
+        projectId: (v['projectId'] as num?)?.toInt() ?? 0,
       );
 }
 
@@ -118,6 +140,13 @@ List<TranslationChannel> defaultTranslationChannels() => [
     model: 'gpt-4o-mini',
     baseUrl: 'https://api.openai.com/v1/chat/completions',
     keyUrl: 'https://platform.openai.com',
+  ),
+  const TranslationChannel(
+    id: 'tencent_tmt',
+    name: '腾讯云 TMT',
+    model: 'TextTranslate',
+    baseUrl: 'https://tmt.tencentcloudapi.com',
+    keyUrl: 'https://console.cloud.tencent.com/cam/capi',
   ),
 ];
 

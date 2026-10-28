@@ -23,6 +23,39 @@ Rect toolbarScreen(Rect selection, List<Rect> screens, Rect viewport) {
   return best;
 }
 
+enum ToolbarSide { below, above, right, left }
+
+/// Choose a side using the expanded footprint before the first menu opens.
+ToolbarSide chooseToolbarSide(
+  Rect selection,
+  Rect screen,
+  Size expanded, {
+  double margin = 12,
+  double gap = 10,
+}) {
+  final safe = screen.deflate(
+    math.min(margin, math.min(screen.width, screen.height) / 4),
+  );
+  final spaces = <ToolbarSide, double>{
+    ToolbarSide.below: safe.bottom - selection.bottom - gap,
+    ToolbarSide.above: selection.top - gap - safe.top,
+    ToolbarSide.right: safe.right - selection.right - gap,
+    ToolbarSide.left: selection.left - gap - safe.left,
+  };
+  for (final entry in spaces.entries) {
+    final required =
+        entry.key == ToolbarSide.below || entry.key == ToolbarSide.above
+        ? expanded.height
+        : expanded.width;
+    if (entry.value >= required) return entry.key;
+  }
+  // If no expanded panel fits outside, retain one vertical anchor and overlap
+  // the selection instead of switching sides while an inspector animates.
+  return spaces[ToolbarSide.above]! >= spaces[ToolbarSide.below]!
+      ? ToolbarSide.above
+      : ToolbarSide.below;
+}
+
 /// Constraints are independent of how close the selection is to an edge.
 /// Position is computed with the child's actual size during the same layout pass.
 class ToolbarLayout extends SingleChildLayoutDelegate {
@@ -31,9 +64,15 @@ class ToolbarLayout extends SingleChildLayoutDelegate {
     required this.screen,
     this.margin = 12,
     this.gap = 10,
+    this.side,
+    this.reservedHeight = 0,
+    this.manualAnchor,
   });
   final Rect selection, screen;
   final double margin, gap;
+  final ToolbarSide? side;
+  final double reservedHeight;
+  final Offset? manualAnchor;
   Rect get safe => screen.deflate(
     math.min(margin, math.min(screen.width, screen.height) / 4),
   );
@@ -47,6 +86,25 @@ class ToolbarLayout extends SingleChildLayoutDelegate {
   @override
   Offset getPositionForChild(Size size, Size childSize) {
     final bounds = safe;
+    if (manualAnchor case final Offset anchor) {
+      final y = side == ToolbarSide.above
+          ? anchor.dy - childSize.height
+          : anchor.dy;
+      return Offset(
+        anchor.dx
+            .clamp(
+              bounds.left,
+              math.max(bounds.left, bounds.right - childSize.width),
+            )
+            .toDouble(),
+        y
+            .clamp(
+              bounds.top,
+              math.max(bounds.top, bounds.bottom - childSize.height),
+            )
+            .toDouble(),
+      );
+    }
     bool fits(Offset p) =>
         p.dx >= bounds.left &&
         p.dy >= bounds.top &&
@@ -60,6 +118,53 @@ class ToolbarLayout extends SingleChildLayoutDelegate {
       bounds.top,
       math.max(bounds.top, bounds.bottom - childSize.height),
     );
+    if (side != null) {
+      final plannedHeight = math.min(
+        bounds.height,
+        math.max(reservedHeight, childSize.height),
+      );
+      final fixedY = (selection.center.dy - plannedHeight / 2)
+          .clamp(
+            bounds.top,
+            math.max(bounds.top, bounds.bottom - plannedHeight),
+          )
+          .toDouble();
+      final belowY = (selection.bottom + gap)
+          .clamp(
+            bounds.top,
+            math.max(bounds.top, bounds.bottom - plannedHeight),
+          )
+          .toDouble();
+      final aboveBottom = selection.top - gap >= bounds.top + reservedHeight
+          ? math.min(selection.top - gap, bounds.bottom)
+          : bounds.bottom;
+      final anchor = switch (side!) {
+        ToolbarSide.below => Offset(rightAligned.toDouble(), belowY),
+        ToolbarSide.above => Offset(
+          rightAligned.toDouble(),
+          aboveBottom - childSize.height,
+        ),
+        ToolbarSide.right => Offset(selection.right + gap, fixedY),
+        ToolbarSide.left => Offset(
+          selection.left - gap - childSize.width,
+          fixedY,
+        ),
+      };
+      return Offset(
+        anchor.dx
+            .clamp(
+              bounds.left,
+              math.max(bounds.left, bounds.right - childSize.width),
+            )
+            .toDouble(),
+        anchor.dy
+            .clamp(
+              bounds.top,
+              math.max(bounds.top, bounds.bottom - childSize.height),
+            )
+            .toDouble(),
+      );
+    }
     final candidates = [
       Offset(rightAligned.toDouble(), selection.bottom + gap),
       Offset(rightAligned.toDouble(), selection.top - gap - childSize.height),
@@ -87,7 +192,10 @@ class ToolbarLayout extends SingleChildLayoutDelegate {
       old.selection != selection ||
       old.screen != screen ||
       old.margin != margin ||
-      old.gap != gap;
+      old.gap != gap ||
+      old.side != side ||
+      old.reservedHeight != reservedHeight ||
+      old.manualAnchor != manualAnchor;
 }
 
 /// Keep the temporary text action near a shape's lower-right corner, without

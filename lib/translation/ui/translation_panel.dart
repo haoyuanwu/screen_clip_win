@@ -15,11 +15,13 @@ class TranslationPanel extends StatefulWidget {
     required this.onClose,
     required this.openUrl,
     this.settingsInitially = false,
+    this.onConfigured,
   });
   final TranslationController controller;
   final VoidCallback onClose;
   final Future<void> Function(Uri) openUrl;
   final bool settingsInitially;
+  final VoidCallback? onConfigured;
   @override
   State<TranslationPanel> createState() => _TranslationPanelState();
 }
@@ -79,11 +81,12 @@ class _TranslationPanelState extends State<TranslationPanel> {
         });
       }
     } catch (_) {
-      if (mounted)
+      if (mounted) {
         setState(() {
           copyStatus = '复制失败，请重试';
           copiedResult = result;
         });
+      }
     }
   }
 
@@ -208,6 +211,7 @@ class _TranslationPanelState extends State<TranslationPanel> {
                         ? ChannelSettings(
                             controller: c,
                             openUrl: widget.openUrl,
+                            onConfigured: widget.onConfigured,
                           )
                         : Padding(
                             padding: const EdgeInsets.all(16),

@@ -72,7 +72,12 @@ class TranslationController extends ChangeNotifier {
         if (channels.map((c) => c.id).toSet().length != channels.length) {
           throw const FormatException();
         }
-        _channels = channels;
+        // Append newly shipped presets without replacing saved user settings.
+        final ids = channels.map((c) => c.id).toSet();
+        _channels = [
+          ...channels,
+          ...defaultTranslationChannels().where((c) => !ids.contains(c.id)),
+        ];
         activeId =
             data['activeId'] as String? ?? channels.firstOrNull?.id ?? '';
         from =
@@ -208,7 +213,7 @@ class TranslationController extends ChangeNotifier {
     }
   }
 
-  Future<void> translate() async {
+  Future<void> translate({List<String>? segments}) async {
     if (translating || extracting) return;
     final channel = activeChannel;
     if (channel == null || !channel.configured || !channel.isEnabled) {
@@ -233,6 +238,7 @@ class TranslationController extends ChangeNotifier {
         from: from,
         to: to,
         channel: channel,
+        segments: segments,
       );
       final translated = await task.future;
       if (_disposed || request != _request) return;

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
@@ -15,6 +16,8 @@ import 'ui/qr_overlay.dart';
 import 'color_picker.dart';
 import 'ui/color_preview.dart';
 import '../translation/ui/translation_panel.dart';
+import '../translation/models.dart';
+import '../translation/ui/reading_panel.dart';
 import 'ui/capture_mirrors.dart'
     show markCaptureMirrorsReady, scheduleCaptureFrame;
 
@@ -102,6 +105,7 @@ class Mark {
     this.maxTextWidth = double.infinity,
     this.minTextWidth = 0,
     this.background = Colors.transparent,
+    this.translationId,
     this.padding = 10,
     this.textFrame,
     this.rotation = 0,
@@ -118,6 +122,7 @@ class Mark {
   final double fontSize, maxTextWidth, minTextWidth;
   final bool bold, italic, underline;
   final Color background;
+  final int? translationId;
   final double padding;
   final Size? textFrame;
   final double rotation;
@@ -146,6 +151,7 @@ class Mark {
     maxTextWidth: maxTextWidth,
     minTextWidth: minTextWidth,
     background: background ?? this.background,
+    translationId: translationId,
     padding: inset ?? padding,
     textFrame: frame ?? textFrame,
     rotation: angle ?? rotation,
@@ -176,6 +182,47 @@ class Mark {
             ? maxTextWidth
             : math.max(1, textFrame!.width - padding * 2),
       );
+}
+
+/// Translation is a normal editable annotation, so exports and undo share
+/// exactly the same layout and background as the screenshot preview.
+Mark imageTranslationMark(String text, Rect target, {int? translationId}) {
+  final padding = math.min(3.0, math.min(target.width, target.height) / 8);
+  double low = .1, high = math.max(1, target.height / 1.3);
+  for (var i = 0; i < 18; i++) {
+    final size = (low + high) / 2;
+    final painter = TextPainter(
+      text: TextSpan(
+        text: text,
+        style: TextStyle(
+          fontSize: size,
+          height: 1.3,
+          fontFamily: 'Microsoft YaHei',
+          fontFamilyFallback: const ['PingFang SC'],
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout(maxWidth: math.max(1, target.width - padding * 2));
+    final fits = painter.height <= target.height - padding * 2;
+    painter.dispose();
+    if (fits) {
+      low = size;
+    } else {
+      high = size;
+    }
+  }
+  return Mark(
+    MarkTool.text,
+    const Color(0xff302719),
+    1,
+    [target.topLeft],
+    text: text,
+    fontSize: low,
+    padding: padding,
+    textFrame: target.size,
+    background: const Color(0xffffedc7),
+    translationId: translationId,
+  );
 }
 
 Offset rotateTextVector(Offset point, double angle) => Offset(
@@ -528,26 +575,230 @@ class _CaptureEditorState extends State<CaptureEditor> {
     widget.controller.translation.cancel();
     setState(() => translationOpen = false);
     focus.requestFocus();
+    final channel = widget.controller.translation.activeChannel;
+    if (channel?.configured == true && channel?.isEnabled == true) {
+      unawaited(openTranslation());
+    }
+  }
+
+  bool translationReading = false;
+  Rect? translationReadingPosition;
+  int nextTranslationId = 0;
+  int? activeTranslationId;
+  List<TranslationPassage> translationPassages = [];
+  List<TranslationPassage> get readingPassages {
+    final translated = {
+      for (final m in marks)
+        if (m.translationId != null) m.translationId!: m,
+    };
+    return [
+      for (final p in translationPassages)
+        if (translated[p.id] case final Mark mark)
+          TranslationPassage(
+            id: p.id,
+            source: p.source,
+            translation: mark.text,
+            box: p.box,
+          ),
+    ];
+  }
+
+  bool get readingActive => translationReading && readingPassages.isNotEmpty;
+  List<Mark> get visibleMarks {
+    if (!readingActive) return marks;
+    final ids = translationPassages.map((p) => p.id).toSet();
+    return marks.where((m) => !ids.contains(m.translationId)).toList();
+  }
+
+  void selectTranslationPassage(int id) {
+    if (activeTranslationId == id) return;
+    setState(() => activeTranslationId = id);
+    scheduleCaptureFrame();
+  }
+
+  void toggleTranslationReading() {
+    commitText();
+    setState(() {
+      translationReading = !translationReading;
+      selectedTextIndex = null;
+      activeTranslationId ??= readingPassages.firstOrNull?.id;
+    });
+    scheduleCaptureFrame();
+    focus.requestFocus();
+  }
+
+  bool translatingImage = false;
+  int imageTranslationRequest = 0;
+  String? imageTranslationStatus, imageTranslationFailure;
+
+  void cancelImageTranslation() {
+    imageTranslationRequest++;
+    widget.controller.translation.cancel();
+    translatingImage = false;
+    imageTranslationStatus = null;
+    imageTranslationFailure = null;
   }
 
   Future<void> openTranslation() async {
     if (locked || image == null || region == null) return;
+    final c = widget.controller.translation;
+    final request = ++imageTranslationRequest;
     commitText();
     dismissTextPrompt();
-    setState(() => translationOpen = true);
-    await widget.controller.translation.extract(() async {
-      if (ocrSelection?.hasText == true) {
-        return ocrSelection!.selectedText.isEmpty
-            ? ocrSelection!.text
-            : ocrSelection!.selectedText;
-      }
-      final bytes = await renderCapture(image!, marks, region, mosaic: mosaic);
-      final result = await widget.controller.bridge.recognizeText(bytes);
-      final selection = OcrSelection(result);
-      final text = selection.text;
-      selection.dispose();
-      return text;
+    setState(() {
+      translatingImage = true;
+      translationReading = false;
+      imageTranslationFailure = null;
+      imageTranslationStatus = '正在准备翻译';
     });
+    scheduleCaptureFrame();
+    await c.initialize();
+    if (!mounted || request != imageTranslationRequest) return;
+    if (!c.initialized ||
+        c.activeChannel?.configured != true ||
+        c.activeChannel?.isEnabled != true) {
+      setState(() {
+        translatingImage = false;
+        imageTranslationStatus = null;
+        translationOpen = true;
+      });
+      scheduleCaptureFrame();
+      return;
+    }
+    OcrSelection? temporary;
+    try {
+      setState(() => imageTranslationStatus = '正在识别选区文字');
+      scheduleCaptureFrame();
+      var selection = ocrSelection;
+      if (selection == null) {
+        final bytes = await renderCapture(
+          image!,
+          marks.where((m) => m.translationId == null).toList(),
+          region,
+          mosaic: mosaic,
+        );
+        if (!mounted || request != imageTranslationRequest) return;
+        final recognized = await widget.controller.bridge.recognizeText(bytes);
+        if (!mounted || request != imageTranslationRequest) return;
+        selection = temporary = OcrSelection(recognized);
+      }
+      final groups = <int, List<OcrGlyph>>{};
+      for (final glyph in selection.glyphs) {
+        if (!selection.selection.isCollapsed &&
+            (glyph.end <= selection.selection.start ||
+                glyph.start >= selection.selection.end)) {
+          continue;
+        }
+        groups.putIfAbsent(glyph.line, () => []).add(glyph);
+      }
+      if (groups.isEmpty) throw const FormatException('选区中没有识别到文字');
+      final texts = <String>[];
+      final boxes = <Rect>[];
+      for (final glyphs in groups.values) {
+        texts.add(
+          selection.text.substring(glyphs.first.start, glyphs.last.end),
+        );
+        boxes.add(
+          glyphs.map((g) => g.box).reduce((a, b) => a.expandToInclude(b)),
+        );
+      }
+      c.setSource(texts.join('\n'), label: '截图选区');
+      setState(() => imageTranslationStatus = '正在翻译 ${texts.length} 处文字');
+      scheduleCaptureFrame();
+      await c.translate(segments: texts);
+      if (!mounted || request != imageTranslationRequest) return;
+      if (c.result == null) throw FormatException(c.error ?? '翻译已取消');
+      final decoded = jsonDecode(c.result!.translatedText);
+      if (decoded is! List ||
+          decoded.length != texts.length ||
+          decoded.any((v) => v is! String || v.trim().isEmpty)) {
+        throw const FormatException('服务商返回的译文区域不匹配，请重试或切换模型');
+      }
+      final result = c.result!;
+      c.result = TranslationResult(
+        originalText: result.originalText,
+        translatedText: decoded.join('\n'),
+        channelName: result.channelName,
+        from: result.from,
+        to: result.to,
+        tokensUsed: result.tokensUsed,
+        duration: result.duration,
+      );
+      final before = List<Mark>.of(marks);
+      final selectedBefore = selectedTextIndex;
+      final translated = <Mark>[];
+      final passages = <TranslationPassage>[];
+      for (var i = 0; i < boxes.length; i++) {
+        final box = boxes[i];
+        final target = Rect.fromLTWH(
+          region!.left + box.left * region!.width,
+          region!.top + box.top * region!.height,
+          box.width * region!.width,
+          box.height * region!.height,
+        ).intersect(region!);
+        if (target.isEmpty) continue;
+        final id = nextTranslationId++;
+        passages.add(
+          TranslationPassage(
+            id: id,
+            source: texts[i],
+            translation: decoded[i] as String,
+            box: target,
+          ),
+        );
+        translated.add(
+          imageTranslationMark(decoded[i] as String, target, translationId: id),
+        );
+      }
+      setState(() {
+        clearOcr(cancelTranslation: false);
+        commit();
+        marks.removeWhere(
+          (m) => translationPassages.any((p) => p.id == m.translationId),
+        );
+        marks.addAll(translated);
+        translationPassages = passages;
+        final viewport = viewportKey.currentContext?.findRenderObject();
+        final sx = viewport is RenderBox && viewport.hasSize
+            ? viewport.size.width / widget.clip.width
+            : 1.0;
+        final sy = viewport is RenderBox && viewport.hasSize
+            ? viewport.size.height / widget.clip.height
+            : 1.0;
+        translationReading = prefersTranslationReading(
+          Size(region!.width * sx, region!.height * sy),
+          textSizes: translated.map((m) => m.fontSize * sy),
+        );
+        translationReadingPosition = null;
+        activeTranslationId = passages.firstOrNull?.id;
+        selectedTextIndex = null;
+        markListUndo.add((
+          before: before,
+          after: List<Mark>.of(marks),
+          selectedBefore: selectedBefore,
+          selectedAfter: null,
+        ));
+        operations.add(3);
+        tool = MarkTool.select;
+        imageTranslationStatus = '已翻译 ${translated.length} 处 · 可拖动编辑，支持撤销';
+      });
+    } catch (e) {
+      if (mounted && request == imageTranslationRequest) {
+        setState(() {
+          imageTranslationStatus = null;
+          imageTranslationFailure = e is FormatException
+              ? e.message
+              : '翻译失败，请检查网络或渠道配置后重试';
+        });
+      }
+    } finally {
+      temporary?.dispose();
+      if (mounted && request == imageTranslationRequest) {
+        setState(() => translatingImage = false);
+        focus.requestFocus();
+        scheduleCaptureFrame();
+      }
+    }
   }
 
   ui.Image? image;
@@ -597,6 +848,47 @@ class _CaptureEditorState extends State<CaptureEditor> {
       textPromptFocused = false;
   Timer? textPromptTimer;
   final toolbarKey = GlobalKey(), viewportKey = GlobalKey();
+  ToolbarSide? toolbarSide;
+  Offset? toolbarManualAnchor;
+
+  void startToolbarDrag() {
+    final box = toolbarKey.currentContext?.findRenderObject();
+    final viewport = viewportKey.currentContext?.findRenderObject();
+    if (box is! RenderBox || viewport is! RenderBox) return;
+    final p = box.localToGlobal(Offset.zero, ancestor: viewport);
+    toolbarManualAnchor = toolbarSide == ToolbarSide.above
+        ? p + Offset(0, box.size.height)
+        : p;
+  }
+
+  void moveToolbar(Offset delta) {
+    if (toolbarManualAnchor == null) return;
+    final box = toolbarKey.currentContext?.findRenderObject();
+    final screen = toolbarAnchorScreen;
+    if (box is! RenderBox || screen == null) return;
+    final safe = screen.deflate(12);
+    final next = toolbarManualAnchor! + delta;
+    final y = toolbarSide == ToolbarSide.above
+        ? next.dy - box.size.height
+        : next.dy;
+    final top = y.clamp(
+      safe.top,
+      math.max(safe.top, safe.bottom - box.size.height),
+    );
+    setState(
+      () => toolbarManualAnchor = Offset(
+        next.dx.clamp(
+          safe.left,
+          math.max(safe.left, safe.right - box.size.width),
+        ),
+        (toolbarSide == ToolbarSide.above ? top + box.size.height : top)
+            .toDouble(),
+      ),
+    );
+    scheduleCaptureFrame();
+  }
+
+  Rect? toolbarAnchorSelection, toolbarAnchorScreen;
   Rect? measuredToolbar;
   bool measuringToolbar = false;
   Offset? dragStart;
@@ -629,6 +921,7 @@ class _CaptureEditorState extends State<CaptureEditor> {
   );
   bool get locked =>
       translationOpen ||
+      translatingImage ||
       rendering ||
       recognizingText ||
       scanningQr ||
@@ -773,7 +1066,7 @@ class _CaptureEditorState extends State<CaptureEditor> {
                   )
                 : await ColorPixels.fromImage(image!)
           : await ColorPixels.fromPng(
-              await renderCapture(image!, marks, bounds, mosaic: mosaic),
+              await renderCapture(image!, visibleMarks, bounds, mosaic: mosaic),
             );
       if (!mounted || request != colorRequest) return;
       final picker = ScreenColorPicker(pixels)..move(cursor ?? bounds.center);
@@ -801,7 +1094,11 @@ class _CaptureEditorState extends State<CaptureEditor> {
     }
   }
 
-  void clearOcr() {
+  void clearOcr({bool cancelTranslation = true}) {
+    if (cancelTranslation) {
+      cancelImageTranslation();
+      translationReading = false;
+    }
     clearColorPicker();
     clearQr();
     ocrFailure = null;
@@ -917,7 +1214,12 @@ class _CaptureEditorState extends State<CaptureEditor> {
     commitText();
     setState(() => rendering = true);
     try {
-      final bytes = await renderCapture(image!, marks, region, mosaic: mosaic);
+      final bytes = await renderCapture(
+        image!,
+        visibleMarks,
+        region,
+        mosaic: mosaic,
+      );
       if (!mounted) return;
       if (pin) {
         await widget.controller.pin(
@@ -961,7 +1263,12 @@ class _CaptureEditorState extends State<CaptureEditor> {
       ocrFailure = null;
     });
     try {
-      final bytes = await renderCapture(image!, marks, region, mosaic: mosaic);
+      final bytes = await renderCapture(
+        image!,
+        visibleMarks,
+        region,
+        mosaic: mosaic,
+      );
       if (!mounted || request != ocrRequest) return;
       final result = await widget.controller.bridge.recognizeText(bytes);
       if (!mounted || request != ocrRequest) return;
@@ -1000,7 +1307,12 @@ class _CaptureEditorState extends State<CaptureEditor> {
     });
     final request = ++qrRequest;
     try {
-      final bytes = await renderCapture(image!, marks, region, mosaic: mosaic);
+      final bytes = await renderCapture(
+        image!,
+        visibleMarks,
+        region,
+        mosaic: mosaic,
+      );
       if (!mounted || request != qrRequest) return;
       final result = await widget.controller.bridge.scanQrCodes(bytes);
       if (!mounted || request != qrRequest) return;
@@ -1107,6 +1419,7 @@ class _CaptureEditorState extends State<CaptureEditor> {
       maxTextWidth: available,
       minTextWidth: previous?.minTextWidth ?? 80,
       background: textBackground,
+      translationId: previous?.translationId,
       textFrame: frame,
       rotation: previous?.rotation ?? 0,
       padding: inset,
@@ -1321,6 +1634,7 @@ class _CaptureEditorState extends State<CaptureEditor> {
     Offset point,
     double tolerance,
   ) {
+    if (readingActive) return null;
     if (textAnchor != null ||
         region == null ||
         (tool != MarkTool.text && tool != MarkTool.select)) {
@@ -1444,6 +1758,16 @@ class _CaptureEditorState extends State<CaptureEditor> {
   }
 
   void escape() {
+    if (readingActive) {
+      toggleTranslationReading();
+      return;
+    }
+    if (translatingImage ||
+        imageTranslationFailure != null ||
+        imageTranslationStatus != null) {
+      setState(cancelImageTranslation);
+      return;
+    }
     if (colorPicker != null || preparingColor) {
       closeColorPicker();
       return;
@@ -1754,12 +2078,17 @@ class _CaptureEditorState extends State<CaptureEditor> {
     addText(anchor, createNew: true);
   }
 
-  void measureToolbarForPrompt() {
+  void measureToolbarForOverlays() {
     if (measuringToolbar) return;
     measuringToolbar = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       measuringToolbar = false;
-      if (!mounted || !textPromptVisible) return;
+      if (!mounted ||
+          (!textPromptVisible &&
+              !readingActive &&
+              toolbarManualAnchor == null)) {
+        return;
+      }
       final toolbar = toolbarKey.currentContext?.findRenderObject();
       final viewport = viewportKey.currentContext?.findRenderObject();
       if (toolbar is RenderBox &&
@@ -1769,7 +2098,10 @@ class _CaptureEditorState extends State<CaptureEditor> {
         final next =
             toolbar.localToGlobal(Offset.zero, ancestor: viewport) &
             toolbar.size;
-        if (next != measuredToolbar) setState(() => measuredToolbar = next);
+        if (next != measuredToolbar) {
+          setState(() => measuredToolbar = next);
+          scheduleCaptureFrame();
+        }
       }
     });
   }
@@ -2019,7 +2351,61 @@ class _CaptureEditorState extends State<CaptureEditor> {
         onChanged: locked ? null : onChanged,
       ),
     );
-    final inspector = scanningQr
+    final inspector =
+        (readingPassages.isNotEmpty &&
+                (tool == MarkTool.select || readingActive)) ||
+            translatingImage ||
+            imageTranslationStatus != null ||
+            imageTranslationFailure != null
+        ? ToolbarWrap(
+            children: [
+              OcrStatus(
+                title: translatingImage
+                    ? imageTranslationStatus!
+                    : imageTranslationFailure != null
+                    ? '翻译未完成'
+                    : '翻译完成',
+                detail:
+                    imageTranslationFailure ??
+                    (readingActive
+                        ? '图上译文已隐藏 · 指向原文定位译文'
+                        : translatingImage
+                        ? '仅发送文字 · Esc 取消'
+                        : imageTranslationStatus ?? '指向原文段落，对照阅读译文'),
+                icon: CupertinoIcons.globe,
+                attention: imageTranslationFailure != null,
+              ),
+              if (!translatingImage && readingPassages.isNotEmpty)
+                ToolButton(
+                  label: '对照阅读',
+                  selected: readingActive,
+                  icon: CupertinoIcons.book,
+                  onPressed: toggleTranslationReading,
+                  child: const Text('对照阅读'),
+                ),
+              if (imageTranslationFailure != null) ...[
+                ToolButton(
+                  label: '重试翻译',
+                  onPressed: openTranslation,
+                  child: const Text('重试'),
+                ),
+                ToolButton(
+                  label: '配置翻译渠道',
+                  onPressed: () => setState(() => translationOpen = true),
+                  child: const Text('渠道设置'),
+                ),
+              ],
+              if (translatingImage ||
+                  imageTranslationFailure != null ||
+                  readingPassages.isEmpty)
+                ToolButton(
+                  label: translatingImage ? '取消翻译' : '收起翻译提示',
+                  child: Text(translatingImage ? '取消' : '收起'),
+                  onPressed: () => setState(cancelImageTranslation),
+                ),
+            ],
+          )
+        : scanningQr
         ? ToolbarWrap(
             key: const ValueKey('qr-loading-inspector'),
             crossAxisAlignment: WrapCrossAlignment.center,
@@ -2184,120 +2570,136 @@ class _CaptureEditorState extends State<CaptureEditor> {
         : tool == MarkTool.text
         ? ToolbarWrap(
             key: const ValueKey('text-inspector'),
-            alignment: WrapAlignment.start,
-            crossAxisAlignment: WrapCrossAlignment.center,
-            spacing: 3,
-            runSpacing: 3,
+            spacing: 16,
+            runSpacing: 10,
+            crossAxisAlignment: WrapCrossAlignment.start,
             children: [
-              Text(
-                '字号',
-                style: TextStyle(fontSize: 10, color: cs.onSurfaceVariant),
-              ),
-              slider(
-                '字号',
-                fontSize,
-                12,
-                144,
-                (v) => textStyleChanged(() => fontSize = v),
-                step: 1,
-              ),
-              SizedBox(
-                width: 32,
-                child: Text(
-                  '${fontSize.round()}',
-                  style: const TextStyle(
-                    fontSize: 11,
-                    fontFeatures: [ui.FontFeature.tabularFigures()],
-                  ),
-                ),
-              ),
-              // Step controls also provide a precise keyboard/pointer alternative.
-              ToolButton(
-                label: '减小字号',
-                icon: CupertinoIcons.minus,
-                size: 26,
-                onPressed: locked
-                    ? null
-                    : () => textStyleChanged(
-                        () => fontSize = math.max(12, fontSize - 2),
-                      ),
-              ),
-              ToolButton(
-                label: '增大字号',
-                icon: CupertinoIcons.plus,
-                size: 26,
-                onPressed: locked
-                    ? null
-                    : () => textStyleChanged(
-                        () => fontSize = math.min(144, fontSize + 2),
-                      ),
-              ),
-              separator(),
-              ToolButton(
-                label: '加粗',
-                icon: CupertinoIcons.bold,
-                selected: bold,
-                onPressed: locked
-                    ? null
-                    : () => textStyleChanged(() => bold = !bold),
-              ),
-              ToolButton(
-                label: '斜体',
-                icon: CupertinoIcons.italic,
-                selected: italic,
-                onPressed: locked
-                    ? null
-                    : () => textStyleChanged(() => italic = !italic),
-              ),
-              ToolButton(
-                label: '下划线',
-                icon: CupertinoIcons.underline,
-                selected: underline,
-                onPressed: locked
-                    ? null
-                    : () => textStyleChanged(() => underline = !underline),
-              ),
-              ToolButton(
-                label: '文字背景颜色',
-                selected: colorPanel == 'background',
-                onPressed: locked
-                    ? null
-                    : () => setState(
-                        () => colorPanel = colorPanel == 'background'
-                            ? null
-                            : 'background',
-                      ),
-                child: Container(
-                  width: 15,
-                  height: 15,
-                  decoration: BoxDecoration(
-                    color: currentBackground,
-                    borderRadius: BorderRadius.circular(4),
-                    border: Border.all(color: cs.outline),
-                  ),
-                ),
-              ),
-              separator(),
-              Row(
-                mainAxisSize: MainAxisSize.min,
+              ToolbarOptionGroup(
+                label: '字号',
                 children: [
-                  for (final entry in [
-                    (TextAlign.left, CupertinoIcons.text_alignleft, '文字左对齐'),
-                    (
-                      TextAlign.center,
-                      CupertinoIcons.text_aligncenter,
-                      '文字居中对齐',
+                  slider(
+                    '字号',
+                    fontSize,
+                    12,
+                    144,
+                    (v) => textStyleChanged(() => fontSize = v),
+                    step: 1,
+                  ),
+                  SizedBox(
+                    width: 32,
+                    child: Text(
+                      '${fontSize.round()}',
+                      style: const TextStyle(
+                        fontSize: 11,
+                        fontFeatures: [ui.FontFeature.tabularFigures()],
+                      ),
                     ),
-                    (TextAlign.right, CupertinoIcons.text_alignright, '文字右对齐'),
-                  ])
-                    ToolButton(
-                      label: entry.$3,
-                      icon: entry.$2,
-                      selected: currentAlignment == entry.$1,
-                      onPressed: locked
-                          ? null
-                          : () => chooseTextAlignment(entry.$1),
+                  ),
+                  // Step controls also provide a precise keyboard/pointer alternative.
+                  ToolButton(
+                    label: '减小字号',
+                    icon: CupertinoIcons.minus,
+                    size: 26,
+                    onPressed: locked
+                        ? null
+                        : () => textStyleChanged(
+                            () => fontSize = math.max(12, fontSize - 2),
+                          ),
+                  ),
+                  ToolButton(
+                    label: '增大字号',
+                    icon: CupertinoIcons.plus,
+                    size: 26,
+                    onPressed: locked
+                        ? null
+                        : () => textStyleChanged(
+                            () => fontSize = math.min(144, fontSize + 2),
+                          ),
+                  ),
+                ],
+              ),
+              ToolbarOptionGroup(
+                label: '样式',
+                children: [
+                  ToolButton(
+                    label: '加粗',
+                    icon: CupertinoIcons.bold,
+                    selected: bold,
+                    onPressed: locked
+                        ? null
+                        : () => textStyleChanged(() => bold = !bold),
+                  ),
+                  ToolButton(
+                    label: '斜体',
+                    icon: CupertinoIcons.italic,
+                    selected: italic,
+                    onPressed: locked
+                        ? null
+                        : () => textStyleChanged(() => italic = !italic),
+                  ),
+                  ToolButton(
+                    label: '下划线',
+                    icon: CupertinoIcons.underline,
+                    selected: underline,
+                    onPressed: locked
+                        ? null
+                        : () => textStyleChanged(() => underline = !underline),
+                  ),
+                  ToolButton(
+                    label: '文字背景颜色',
+                    selected: colorPanel == 'background',
+                    onPressed: locked
+                        ? null
+                        : () => setState(
+                            () => colorPanel = colorPanel == 'background'
+                                ? null
+                                : 'background',
+                          ),
+                    child: Container(
+                      width: 15,
+                      height: 15,
+                      decoration: BoxDecoration(
+                        color: currentBackground,
+                        borderRadius: BorderRadius.circular(4),
+                        border: Border.all(color: cs.outline),
+                      ),
                     ),
+                  ),
+                ],
+              ),
+              ToolbarOptionGroup(
+                label: '对齐',
+                children: [
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      for (final entry in [
+                        (
+                          TextAlign.left,
+                          CupertinoIcons.text_alignleft,
+                          '文字左对齐',
+                        ),
+                        (
+                          TextAlign.center,
+                          CupertinoIcons.text_aligncenter,
+                          '文字居中对齐',
+                        ),
+                        (
+                          TextAlign.right,
+                          CupertinoIcons.text_alignright,
+                          '文字右对齐',
+                        ),
+                      ])
+                        ToolButton(
+                          label: entry.$3,
+                          icon: entry.$2,
+                          selected: currentAlignment == entry.$1,
+                          onPressed: locked
+                              ? null
+                              : () => chooseTextAlignment(entry.$1),
+                        ),
+                    ],
+                  ),
                 ],
               ),
               if (textAnchor != null)
@@ -2319,52 +2721,86 @@ class _CaptureEditorState extends State<CaptureEditor> {
             children: [
               if (isPrivacyBrush(tool))
                 ToolbarWrap(
+                  spacing: 16,
+                  runSpacing: 8,
                   children: [
-                    ToolButton(
-                      label: '模糊画笔',
-                      selected: tool == MarkTool.redact,
-                      onPressed: locked
-                          ? null
-                          : () => chooseTool(MarkTool.redact),
-                      child: const Text('模糊'),
-                    ),
-                    ToolButton(
-                      label: '马赛克画笔',
-                      selected: tool == MarkTool.mosaic,
-                      onPressed: locked
-                          ? null
-                          : () => chooseTool(MarkTool.mosaic),
-                      child: const Text('马赛克'),
-                    ),
-                    const SizedBox(width: 4),
-
-                    for (final entry in [
-                      (
-                        PrivacyInteraction.brush,
-                        '画笔',
-                        CupertinoIcons.paintbrush,
-                      ),
-                      (PrivacyInteraction.rectangle, '框选', Icons.crop_free),
-                    ])
-                      ToolButton(
-                        label: '隐私${entry.$2}模式',
-                        selected: privacyInteraction == entry.$1,
-                        onPressed: locked
-                            ? null
-                            : () => setState(() {
-                                active = null;
-                                privacyInteraction = entry.$1;
-                              }),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(entry.$3, size: 14),
-                            const SizedBox(width: 4),
-                            Text(entry.$2),
-                          ],
+                    ToolbarOptionGroup(
+                      label: '处理效果',
+                      children: [
+                        ToolButton(
+                          label: '模糊画笔',
+                          selected: tool == MarkTool.redact,
+                          onPressed: locked
+                              ? null
+                              : () => chooseTool(MarkTool.redact),
+                          child: const Text('模糊'),
                         ),
-                      ),
+                        ToolButton(
+                          label: '马赛克画笔',
+                          selected: tool == MarkTool.mosaic,
+                          onPressed: locked
+                              ? null
+                              : () => chooseTool(MarkTool.mosaic),
+                          child: const Text('马赛克'),
+                        ),
+                      ],
+                    ),
+                    ToolbarOptionGroup(
+                      label: '操作方式',
+                      children: [
+                        for (final entry in [
+                          (
+                            PrivacyInteraction.brush,
+                            '画笔',
+                            CupertinoIcons.paintbrush,
+                          ),
+                          (PrivacyInteraction.rectangle, '框选', Icons.crop_free),
+                        ])
+                          ToolButton(
+                            label: '隐私${entry.$2}模式',
+                            selected: privacyInteraction == entry.$1,
+                            onPressed: locked
+                                ? null
+                                : () => setState(() {
+                                    active = null;
+                                    privacyInteraction = entry.$1;
+                                  }),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(entry.$3, size: 16),
+                                const SizedBox(width: 4),
+                                Text(entry.$2),
+                              ],
+                            ),
+                          ),
+                      ],
+                    ),
                   ],
+                ),
+              if (isShapeTool(tool))
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: ToolbarOptionGroup(
+                    label: '形状',
+                    children: [
+                      for (final entry in [
+                        (MarkTool.rectangle, '方框标注', CupertinoIcons.square),
+                        (MarkTool.circle, '圆形标注', CupertinoIcons.circle),
+                        (MarkTool.ellipse, '椭圆标注', CupertinoIcons.circle),
+                      ])
+                        ToolButton(
+                          size: 28,
+                          label: entry.$2,
+                          selected: tool == entry.$1,
+                          onPressed: locked ? null : () => chooseTool(entry.$1),
+                          child: Transform.scale(
+                            scaleY: entry.$1 == MarkTool.ellipse ? .65 : 1,
+                            child: Icon(entry.$3, size: 16),
+                          ),
+                        ),
+                    ],
+                  ),
                 ),
               if (isPrivacyBrush(tool) &&
                   privacyInteraction == PrivacyInteraction.rectangle)
@@ -2381,24 +2817,6 @@ class _CaptureEditorState extends State<CaptureEditor> {
               else
                 Row(
                   children: [
-                    if (isShapeTool(tool)) ...[
-                      for (final entry in [
-                        (MarkTool.rectangle, '方框标注', CupertinoIcons.square),
-                        (MarkTool.circle, '圆形标注', CupertinoIcons.circle),
-                        (MarkTool.ellipse, '椭圆标注', CupertinoIcons.circle),
-                      ])
-                        ToolButton(
-                          size: 28,
-                          label: entry.$2,
-                          selected: tool == entry.$1,
-                          onPressed: locked ? null : () => chooseTool(entry.$1),
-                          child: Transform.scale(
-                            scaleY: entry.$1 == MarkTool.ellipse ? .65 : 1,
-                            child: Icon(entry.$3, size: 16),
-                          ),
-                        ),
-                      const SizedBox(width: 4),
-                    ],
                     Text(
                       isPrivacyBrush(tool) ? '笔刷范围' : '线条粗细',
                       style: TextStyle(
@@ -2433,7 +2851,7 @@ class _CaptureEditorState extends State<CaptureEditor> {
                           painter: BrushCursorPainter(
                             center: const Offset(14, 14),
                             diameter: brushDiameter(tool, stroke).clamp(2, 24),
-                            color: isPrivacyBrush(tool) ? Colors.white : color,
+                            color: isPrivacyBrush(tool) ? cs.onSurface : color,
                           ),
                         ),
                       ),
@@ -2453,238 +2871,245 @@ class _CaptureEditorState extends State<CaptureEditor> {
                 ),
             ],
           );
-    return GlassPanel(
-      key: toolbarKey,
-      tintOpacity: Theme.of(context).brightness == Brightness.dark ? .32 : .40,
-      padding: const EdgeInsets.fromLTRB(6, 4, 6, 5),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Row(
-            children: [
-              const SizedBox(width: 3),
-              Text(
-                '${region!.width.round()} × ${region!.height.round()}',
-                style: TextStyle(fontSize: 10, color: cs.onSurfaceVariant),
-              ),
-              Expanded(
-                child: Align(
-                  alignment: Alignment.centerRight,
-                  child: AnimatedSwitcher(
-                    duration: MediaQuery.disableAnimationsOf(context)
-                        ? Duration.zero
-                        : const Duration(milliseconds: 100),
-                    child: Text(
-                      textAnchor == null
-                          ? tool == MarkTool.line
-                                ? (active?.tool == MarkTool.line
-                                      ? '点击终点 · Enter 完成 · Esc 取消直线'
-                                      : '点击两点画直线 · G')
-                                : 'WASD 微调 · Enter 复制'
-                          : 'Enter 换行 · Ctrl/⌘+Enter 完成',
-                      key: ValueKey(textAnchor != null),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(fontSize: 9, color: cs.onSurfaceVariant),
-                    ),
+    final mainHeader = Row(
+      children: [
+        Expanded(
+          child: MouseRegion(
+            cursor: SystemMouseCursors.grab,
+            child: Tooltip(
+              message: '拖动此处移动工具栏',
+              child: GestureDetector(
+                key: const ValueKey('capture-toolbar-drag-handle'),
+                behavior: HitTestBehavior.opaque,
+                dragStartBehavior: DragStartBehavior.down,
+                onPanStart: (_) => startToolbarDrag(),
+                onPanUpdate: (event) => moveToolbar(event.delta),
+                child: SizedBox(
+                  height: 24,
+                  child: Row(
+                    children: [
+                      Icon(
+                        CupertinoIcons.line_horizontal_3,
+                        size: 13,
+                        color: cs.onSurfaceVariant,
+                      ),
+                      const SizedBox(width: 6),
+                      const SizedBox(width: 3),
+                      Text(
+                        '${region!.width.round()} × ${region!.height.round()}',
+                        style: TextStyle(
+                          fontSize: 10,
+                          color: cs.onSurfaceVariant,
+                        ),
+                      ),
+                      Expanded(
+                        child: Align(
+                          alignment: Alignment.centerRight,
+                          child: AnimatedSwitcher(
+                            duration: MediaQuery.disableAnimationsOf(context)
+                                ? Duration.zero
+                                : const Duration(milliseconds: 100),
+                            child: Text(
+                              textAnchor == null
+                                  ? tool == MarkTool.line
+                                        ? (active?.tool == MarkTool.line
+                                              ? '点击终点 · Enter 完成 · Esc 取消直线'
+                                              : '点击两点画直线 · G')
+                                        : 'WASD 微调 · Enter 复制'
+                                  : 'Enter 换行 · Ctrl/⌘+Enter 完成',
+                              key: ValueKey(textAnchor != null),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 9,
+                                color: cs.onSurfaceVariant,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ),
-              const SizedBox(width: 4),
-              ToolButton(
-                label: '重新框选',
-                icon: CupertinoIcons.arrow_2_squarepath,
-                size: 24,
-                onPressed: locked
-                    ? null
-                    : () {
-                        commitText();
-                        setState(() {
-                          changeRegion(null);
-                          dismissTextPrompt();
-                          if (active?.tool == MarkTool.line) active = null;
-                          draggingLine = false;
-                          tool = MarkTool.select;
-                        });
-                      },
-              ),
-            ],
+            ),
           ),
-          ToolbarWrap(
-            spacing: 2,
-            runSpacing: 2,
-            alignment: WrapAlignment.center,
-            crossAxisAlignment: WrapCrossAlignment.center,
-            children: [
-              toolGroup('常用标注', [
-                for (final entry in [
-                  (MarkTool.select, CupertinoIcons.move, '调整选区 · V'),
-                  (MarkTool.arrow, CupertinoIcons.arrow_up_right, '箭头 · Q'),
-                  (MarkTool.rectangle, CupertinoIcons.square, '矩形 · R'),
-                  (MarkTool.pen, CupertinoIcons.pencil, '画笔 · P'),
-                  (MarkTool.text, CupertinoIcons.textformat, '文字 · T'),
-                ])
-                  annotationButton(entry),
-              ], divided: false),
-              toolGroup('补充标注', [
-                annotationButton((
-                  MarkTool.line,
-                  CupertinoIcons.minus,
-                  '直线 · G',
-                )),
-                annotationButton((
-                  MarkTool.number,
-                  CupertinoIcons.list_number,
-                  '序号',
-                )),
-              ]),
-              toolGroup('隐私与识别', [
-                ToolButton(
-                  size: 28,
-                  label: '翻译选区文字',
-                  icon: CupertinoIcons.globe,
-                  onPressed:
-                      locked ||
-                          image == null ||
-                          region == null ||
-                          active != null
-                      ? null
-                      : openTranslation,
-                ),
-                annotationButton((
-                  privacyTool,
-                  CupertinoIcons.shield_lefthalf_fill,
-                  '隐私画笔 · B',
-                )),
-                ToolButton(
-                  size: 28,
-                  label: '识别文字 · OCR',
-                  selected: ocrSelection != null,
-                  onPressed:
-                      locked ||
-                          image == null ||
-                          region == null ||
-                          active != null
-                      ? null
-                      : recognizeText,
-                  child: recognizingText
-                      ? const SizedBox(
-                          width: 15,
-                          height: 15,
-                          child: CircularProgressIndicator(strokeWidth: 1.5),
-                        )
-                      : const Icon(Icons.document_scanner_outlined, size: 17),
-                ),
-                ToolButton(
-                  size: 28,
-                  label: '扫描二维码',
-                  selected: qrCodes != null,
-                  onPressed:
-                      locked ||
-                          image == null ||
-                          region == null ||
-                          active != null
-                      ? null
-                      : scanQr,
-                  child: scanningQr
-                      ? const SizedBox(
-                          width: 15,
-                          height: 15,
-                          child: CircularProgressIndicator(strokeWidth: 1.5),
-                        )
-                      : const Icon(Icons.qr_code_scanner_rounded, size: 17),
-                ),
-                ToolButton(
-                  size: 28,
-                  label: '屏幕取色 · I',
-                  selected: colorPicker != null,
-                  onPressed: locked || image == null || active != null
-                      ? null
-                      : () => startColorPicker(),
-                  icon: Icons.colorize_rounded,
-                ),
-              ]),
-              toolGroup('样式与撤销', [
-                ToolButton(
-                  size: 28,
-                  label: '标注颜色',
-                  selected: colorPanel == 'foreground',
-                  onPressed: locked
-                      ? null
-                      : () => setState(
-                          () => colorPanel = colorPanel == 'foreground'
-                              ? null
-                              : 'foreground',
-                        ),
-                  child: Container(
+        ),
+        const SizedBox(width: 4),
+        ToolButton(
+          label: '重新框选',
+          icon: CupertinoIcons.arrow_2_squarepath,
+          size: 24,
+          onPressed: locked
+              ? null
+              : () {
+                  commitText();
+                  setState(() {
+                    changeRegion(null);
+                    dismissTextPrompt();
+                    if (active?.tool == MarkTool.line) active = null;
+                    draggingLine = false;
+                    tool = MarkTool.select;
+                  });
+                },
+        ),
+      ],
+    );
+    final mainTools = ToolbarWrap(
+      key: const ValueKey('capture-primary-tools'),
+      spacing: 2,
+      runSpacing: 2,
+      alignment: WrapAlignment.center,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        toolGroup('常用标注', [
+          for (final entry in [
+            (MarkTool.select, CupertinoIcons.move, '调整选区 · V'),
+            (MarkTool.arrow, CupertinoIcons.arrow_up_right, '箭头 · Q'),
+            (MarkTool.rectangle, CupertinoIcons.square, '矩形 · R'),
+            (MarkTool.pen, CupertinoIcons.pencil, '画笔 · P'),
+            (MarkTool.text, CupertinoIcons.textformat, '文字 · T'),
+          ])
+            annotationButton(entry),
+        ], divided: false),
+        toolGroup('补充标注', [
+          annotationButton((MarkTool.line, CupertinoIcons.minus, '直线 · G')),
+          annotationButton((MarkTool.number, CupertinoIcons.list_number, '序号')),
+        ]),
+        toolGroup('隐私与识别', [
+          ToolButton(
+            size: 28,
+            label: '翻译选区文字',
+            icon: CupertinoIcons.globe,
+            onPressed:
+                locked || image == null || region == null || active != null
+                ? null
+                : openTranslation,
+          ),
+          annotationButton((
+            privacyTool,
+            CupertinoIcons.shield_lefthalf_fill,
+            '隐私画笔 · B',
+          )),
+          ToolButton(
+            size: 28,
+            label: '识别文字 · OCR',
+            selected: ocrSelection != null,
+            onPressed:
+                locked || image == null || region == null || active != null
+                ? null
+                : recognizeText,
+            child: recognizingText
+                ? const SizedBox(
                     width: 15,
                     height: 15,
-                    decoration: BoxDecoration(
-                      color: color,
-                      borderRadius: BorderRadius.circular(4),
-                      border: Border.all(
-                        color: cs.outline.withValues(alpha: .3),
-                      ),
-                    ),
-                  ),
-                ),
-                ToolButton(
-                  size: 28,
-                  label: '撤销',
-                  icon: CupertinoIcons.arrow_uturn_left,
-                  onPressed:
-                      (operations.isEmpty && active?.tool != MarkTool.line) ||
-                          locked
-                      ? null
-                      : undoOne,
-                ),
-                ToolButton(
-                  size: 28,
-                  label: '重做',
-                  icon: CupertinoIcons.arrow_uturn_right,
-                  onPressed: redoOperations.isEmpty || locked ? null : redoOne,
-                ),
-              ]),
-              toolGroup('输出操作', [
-                ToolButton(
-                  size: 28,
-                  label: '取消 · Esc',
-                  icon: CupertinoIcons.xmark,
-                  onPressed: locked ? null : widget.controller.discard,
-                ),
-                ToolButton(
-                  size: 28,
-                  label: '保存到文件',
-                  icon: CupertinoIcons.square_arrow_down,
-                  onPressed: locked || active?.tool == MarkTool.line
-                      ? null
-                      : () => finish(true),
-                ),
-                ToolButton(
-                  size: 28,
-                  label: '图钉暂存 · F',
-                  icon: CupertinoIcons.pin,
-                  onPressed:
-                      locked || image == null || active?.tool == MarkTool.line
-                      ? null
-                      : () => finish(false, pin: true),
-                ),
-                ToolButton(
-                  size: 28,
-                  label: '复制到剪贴板 · Enter',
-                  icon: CupertinoIcons.check_mark,
-                  primary: true,
-                  onPressed:
-                      locked || image == null || active?.tool == MarkTool.line
-                      ? null
-                      : () => finish(false),
-                ),
-              ]),
-            ],
+                    child: CircularProgressIndicator(strokeWidth: 1.5),
+                  )
+                : const Icon(Icons.document_scanner_outlined, size: 17),
           ),
-          StateTransition(
-            child: Padding(
+          ToolButton(
+            size: 28,
+            label: '扫描二维码',
+            selected: qrCodes != null,
+            onPressed:
+                locked || image == null || region == null || active != null
+                ? null
+                : scanQr,
+            child: scanningQr
+                ? const SizedBox(
+                    width: 15,
+                    height: 15,
+                    child: CircularProgressIndicator(strokeWidth: 1.5),
+                  )
+                : const Icon(Icons.qr_code_scanner_rounded, size: 17),
+          ),
+          ToolButton(
+            size: 28,
+            label: '屏幕取色 · I',
+            selected: colorPicker != null,
+            onPressed: locked || image == null || active != null
+                ? null
+                : () => startColorPicker(),
+            icon: Icons.colorize_rounded,
+          ),
+        ]),
+        toolGroup('样式与撤销', [
+          ToolButton(
+            size: 28,
+            label: '标注颜色',
+            selected: colorPanel == 'foreground',
+            onPressed: locked
+                ? null
+                : () => setState(
+                    () => colorPanel = colorPanel == 'foreground'
+                        ? null
+                        : 'foreground',
+                  ),
+            child: Container(
+              width: 15,
+              height: 15,
+              decoration: BoxDecoration(
+                color: color,
+                borderRadius: BorderRadius.circular(4),
+                border: Border.all(color: cs.outline.withValues(alpha: .3)),
+              ),
+            ),
+          ),
+          ToolButton(
+            size: 28,
+            label: '撤销',
+            icon: CupertinoIcons.arrow_uturn_left,
+            onPressed:
+                (operations.isEmpty && active?.tool != MarkTool.line) || locked
+                ? null
+                : undoOne,
+          ),
+          ToolButton(
+            size: 28,
+            label: '重做',
+            icon: CupertinoIcons.arrow_uturn_right,
+            onPressed: redoOperations.isEmpty || locked ? null : redoOne,
+          ),
+        ]),
+        toolGroup('输出操作', [
+          ToolButton(
+            size: 28,
+            label: '取消 · Esc',
+            icon: CupertinoIcons.xmark,
+            onPressed: locked ? null : widget.controller.discard,
+          ),
+          ToolButton(
+            size: 28,
+            label: '保存到文件',
+            icon: CupertinoIcons.square_arrow_down,
+            onPressed: locked || active?.tool == MarkTool.line
+                ? null
+                : () => finish(true),
+          ),
+          ToolButton(
+            size: 28,
+            label: '图钉暂存 · F',
+            icon: CupertinoIcons.pin,
+            onPressed: locked || image == null || active?.tool == MarkTool.line
+                ? null
+                : () => finish(false, pin: true),
+          ),
+          ToolButton(
+            size: 28,
+            label: '复制到剪贴板 · Enter',
+            icon: CupertinoIcons.check_mark,
+            primary: true,
+            onPressed: locked || image == null || active?.tool == MarkTool.line
+                ? null
+                : () => finish(false),
+          ),
+        ]),
+      ],
+    );
+    final inspectorSection = StateTransition(
+      child: inspector is SizedBox
+          ? inspector
+          : ToolbarInspectorSurface(
               key: ValueKey(
                 scanningQr
                     ? 'qr-loading'
@@ -2704,48 +3129,47 @@ class _CaptureEditorState extends State<CaptureEditor> {
                     ? 'privacy'
                     : 'stroke',
               ),
-              padding: EdgeInsets.only(top: tool == MarkTool.select ? 0 : 3),
               child: inspector,
             ),
-          ),
-          StateTransition(
-            child: colorPanel == null
-                ? const SizedBox.shrink(key: ValueKey('closed-colors'))
-                : Padding(
-                    key: ValueKey(colorPanel),
-                    padding: const EdgeInsets.only(top: 3),
-                    child: Row(
-                      children: [
-                        Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 4),
-                          child: Text(
-                            colorPanel == 'background' ? '背景' : '颜色',
-                            style: TextStyle(
-                              fontSize: 10,
-                              color: cs.onSurfaceVariant,
-                            ),
-                          ),
-                        ),
-                        Expanded(
-                          child: ColorRow(
-                            label: colorPanel == 'background' ? '背景颜色' : '标注颜色',
-                            value: colorPanel == 'background'
-                                ? currentBackground
-                                : color,
-                            clear: colorPanel == 'background',
-                            onChanged: (v) {
-                              if (colorPanel == 'background') {
-                                chooseTextBackground(v);
-                              } else {
-                                textStyleChanged(() => color = v);
-                              }
-                            },
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-          ),
+    );
+    final colorSection = StateTransition(
+      child: colorPanel == null
+          ? const SizedBox.shrink(key: ValueKey('closed-colors'))
+          : ToolbarInspectorSurface(
+              key: ValueKey(colorPanel),
+              title: colorPanel == 'background' ? '文字背景' : '标注颜色',
+              child: ColorRow(
+                label: colorPanel == 'background' ? '背景颜色' : '标注颜色',
+                value: colorPanel == 'background' ? currentBackground : color,
+                clear: colorPanel == 'background',
+                onChanged: (v) {
+                  if (colorPanel == 'background') {
+                    chooseTextBackground(v);
+                  } else {
+                    textStyleChanged(() => color = v);
+                  }
+                },
+              ),
+            ),
+    );
+    return GlassPanel(
+      key: toolbarKey,
+      tintOpacity: Theme.of(context).brightness == Brightness.dark ? .90 : .92,
+      padding: const EdgeInsets.fromLTRB(6, 4, 6, 5),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (toolbarSide == ToolbarSide.above) ...[
+            inspectorSection,
+            colorSection,
+          ],
+          mainHeader,
+          mainTools,
+          if (toolbarSide != ToolbarSide.above) ...[
+            inspectorSection,
+            colorSection,
+          ],
           if (loadError != null || widget.controller.error != null)
             Padding(
               padding: const EdgeInsets.only(top: 4),
@@ -2857,6 +3281,7 @@ class _CaptureEditorState extends State<CaptureEditor> {
         autofocus: true,
         child: LayoutBuilder(
           builder: (context, constraints) {
+            final shownMarks = visibleMarks.toSet();
             final sx = constraints.maxWidth / widget.clip.width,
                 sy = constraints.maxHeight / widget.clip.height;
             Offset point(Offset p) => Offset(
@@ -2914,7 +3339,11 @@ class _CaptureEditorState extends State<CaptureEditor> {
                     promptBounds.right * sx,
                     promptBounds.bottom * sy,
                   );
-            if (textPromptVisible) measureToolbarForPrompt();
+            if (textPromptVisible ||
+                readingActive ||
+                toolbarManualAnchor != null) {
+              measureToolbarForOverlays();
+            }
             final displayRects = widget.clip.screens
                 .map(
                   (r) => Rect.fromLTRB(
@@ -2930,11 +3359,45 @@ class _CaptureEditorState extends State<CaptureEditor> {
               displayRects,
               viewport,
             );
+            final reservedToolbarHeight = math.min(
+              currentScreen.height - 24,
+              (currentScreen.width < 600 ? 320.0 : 240.0) *
+                  math.max(1, MediaQuery.textScalerOf(context).scale(12) / 12),
+            );
+            if (screenRect != null &&
+                (toolbarAnchorSelection != screenRect ||
+                    toolbarAnchorScreen != currentScreen)) {
+              toolbarSide = chooseToolbarSide(
+                screenRect,
+                currentScreen,
+                Size(
+                  math.min(650, currentScreen.width - 24),
+                  reservedToolbarHeight,
+                ),
+              );
+              if (toolbarAnchorSelection != screenRect) {
+                toolbarManualAnchor = null;
+              }
+              toolbarAnchorSelection = screenRect;
+              toolbarAnchorScreen = currentScreen;
+            }
             // Native bridges return the primary display first. The session hint
             // stays there even when the pointer or selection moves to another screen.
             final hintScreen = displayRects.isEmpty
                 ? viewport
                 : displayRects.first.intersect(viewport);
+            final readingRect = readingActive && screenRect != null
+                ? translationReadingPosition == null
+                      ? translationReadingRect(
+                          screenRect,
+                          currentScreen,
+                          toolbar: measuredToolbar,
+                        )
+                      : clampTranslationReadingRect(
+                          translationReadingPosition!,
+                          currentScreen,
+                        )
+                : null;
             return Stack(
               key: viewportKey,
               children: [
@@ -3030,7 +3493,9 @@ class _CaptureEditorState extends State<CaptureEditor> {
                             image,
                             [
                               for (int i = 0; i < marks.length; i++)
-                                if (i != editingTextIndex) marks[i],
+                                if (i != editingTextIndex &&
+                                    shownMarks.contains(marks[i]))
+                                  marks[i],
                             ],
                             preview,
                             selected,
@@ -3047,7 +3512,23 @@ class _CaptureEditorState extends State<CaptureEditor> {
                     ),
                   ),
                 ),
-                if (region != null && (recognizingText || ocrSelection != null))
+                if (region != null && translatingImage)
+                  Positioned.fromRect(
+                    rect: Rect.fromLTWH(
+                      region!.left * sx,
+                      region!.top * sy,
+                      region!.width * sx,
+                      region!.height * sy,
+                    ),
+                    child: ClipRect(
+                      child: OcrScanOverlay(
+                        label: imageTranslationStatus ?? '正在翻译',
+                      ),
+                    ),
+                  ),
+                if (region != null &&
+                    !translatingImage &&
+                    (recognizingText || ocrSelection != null))
                   Positioned(
                     left: region!.left * sx,
                     top: region!.top * sy,
@@ -3337,6 +3818,51 @@ class _CaptureEditorState extends State<CaptureEditor> {
                       ),
                     ),
                   ),
+                if (readingActive && region != null && !translationOpen) ...[
+                  Positioned.fromRect(
+                    rect: screenRect!,
+                    child: MouseRegion(
+                      cursor: SystemMouseCursors.text,
+                      onHover: (event) {
+                        final p = Offset(
+                          region!.left + event.localPosition.dx / sx,
+                          region!.top + event.localPosition.dy / sy,
+                        );
+                        for (final passage in readingPassages) {
+                          if (passage.box.contains(p)) {
+                            selectTranslationPassage(passage.id);
+                            break;
+                          }
+                        }
+                      },
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTapDown: (event) {
+                          final p = Offset(
+                            region!.left + event.localPosition.dx / sx,
+                            region!.top + event.localPosition.dy / sy,
+                          );
+                          for (final passage in readingPassages) {
+                            if (passage.box.contains(p)) {
+                              selectTranslationPassage(passage.id);
+                              break;
+                            }
+                          }
+                        },
+                        onPanStart: (_) {},
+                        child: ClipRect(
+                          child: CustomPaint(
+                            painter: TranslationSourceHighlight(
+                              readingPassages,
+                              activeTranslationId,
+                              region!,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
                 if (translationOpen) ...[
                   Positioned.fill(
                     child: GestureDetector(
@@ -3369,6 +3895,8 @@ class _CaptureEditorState extends State<CaptureEditor> {
                           ),
                           child: TranslationPanel(
                             controller: widget.controller.translation,
+                            settingsInitially: true,
+                            onConfigured: closeTranslation,
                             onClose: closeTranslation,
                             openUrl: widget.controller.bridge.openServiceUrl,
                           ),
@@ -3419,6 +3947,9 @@ class _CaptureEditorState extends State<CaptureEditor> {
                       delegate: ToolbarLayout(
                         selection: screenRect!,
                         screen: currentScreen,
+                        side: toolbarSide,
+                        reservedHeight: reservedToolbarHeight,
+                        manualAnchor: toolbarManualAnchor,
                       ),
                       child: SingleChildScrollView(
                         child: TweenAnimationBuilder<double>(
@@ -3431,6 +3962,38 @@ class _CaptureEditorState extends State<CaptureEditor> {
                               Opacity(opacity: value, child: child),
                           child: IntrinsicWidth(child: buildToolbar(context)),
                         ),
+                      ),
+                    ),
+                  ),
+                if (readingActive && region != null && !translationOpen)
+                  Positioned.fromRect(
+                    rect: readingRect!,
+                    child: TweenAnimationBuilder<double>(
+                      tween: Tween(begin: 0, end: 1),
+                      duration: MediaQuery.disableAnimationsOf(context)
+                          ? Duration.zero
+                          : const Duration(milliseconds: 160),
+                      curve: Curves.easeOutCubic,
+                      builder: (context, value, child) =>
+                          Opacity(opacity: value, child: child),
+                      child: TranslationReadingPanel(
+                        passages: readingPassages,
+                        activeId: activeTranslationId,
+                        onSelect: selectTranslationPassage,
+                        onClose: toggleTranslationReading,
+                        onDragStart: () =>
+                            translationReadingPosition = readingRect,
+                        onDragUpdate: (delta) {
+                          setState(
+                            () => translationReadingPosition =
+                                clampTranslationReadingRect(
+                                  (translationReadingPosition ?? readingRect)
+                                      .shift(delta),
+                                  currentScreen,
+                                ),
+                          );
+                          scheduleCaptureFrame();
+                        },
                       ),
                     ),
                   ),

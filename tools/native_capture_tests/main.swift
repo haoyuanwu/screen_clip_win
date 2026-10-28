@@ -19,6 +19,20 @@ func pixel(_ image: CGImage, _ x: Int, _ y: Int) -> [UInt8] {
 }
 
 let background = image(width: 12, height: 10, color: (255, 255, 255, 255))
+if #available(macOS 14.0, *) {
+  // Independent-window captures must fill the entire pixel surface at both
+  // nominal and Retina desktop scales, including mixed-display selections.
+  for scale in [CGFloat(1), 1.5, 2] {
+    let config = WindowCaptureComposite.configuration(
+      pixelSize: CGSize(width: 601 * scale, height: 399 * scale))
+    assert(config.scalesToFit, "Window content must upscale to the desktop pixel scale")
+    assert(config.destinationRect == CGRect(x: 0, y: 0, width: config.width, height: config.height))
+    assert(config.width == Int((601 * scale).rounded()))
+    assert(config.height == Int((399 * scale).rounded()))
+    assert(config.ignoreShadowsSingleWindow && !config.showsCursor)
+  }
+  print("Independent-window output fills 1x, fractional and Retina surfaces")
+}
 let red = image(width: 4, height: 2, color: (255, 0, 0, 255))
 let first = WindowCaptureComposite.image(background: background, window: red,
   pixelRect: CGRect(x: 2, y: 1, width: 4, height: 2))!

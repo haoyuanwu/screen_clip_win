@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:screen_clip_win/src/controller.dart';
 import 'package:screen_clip_win/src/editor.dart';
 import 'package:screen_clip_win/src/ui/controls.dart';
+import 'package:screen_clip_win/src/ui/toolbar_layout.dart';
 
 Future<void> mount(WidgetTester tester, Size viewport) async {
   tester.view.physicalSize = viewport;
@@ -49,6 +50,129 @@ Future<void> press(WidgetTester tester, String label) async {
 }
 
 void main() {
+  testWidgets(
+    'Toolbar drag moves tools without changing selection and preserves position through menus',
+    (tester) async {
+      await mount(tester, const Size(1200, 800));
+      final primary = find.byKey(const ValueKey('capture-primary-tools'));
+      final handle = find.byKey(const ValueKey('capture-toolbar-drag-handle'));
+      final original = tester.getRect(primary);
+      final selection = painter(tester).region;
+      await tester.drag(handle, const Offset(-150, -100));
+      await tester.pumpAndSettle();
+      final moved = tester.getRect(primary);
+      expect(
+        (moved.topLeft - original.topLeft - const Offset(-150, -100)).distance,
+        lessThan(.01),
+      );
+      expect(painter(tester).region, selection);
+      expect(painter(tester).marks, isEmpty);
+      await press(tester, '文字 · T');
+      await press(tester, '文字背景颜色');
+      expect(
+        (tester.getRect(primary).topLeft - moved.topLeft).distance,
+        lessThan(.01),
+      );
+      await press(tester, '文字背景颜色');
+      await press(tester, '调整选区 · V');
+      expect(
+        (tester.getRect(primary).topLeft - moved.topLeft).distance,
+        lessThan(.01),
+      );
+      await tester.drag(handle, const Offset(-2000, -2000));
+      await tester.pumpAndSettle();
+      final clamped = tester.getRect(find.byType(GlassPanel).last);
+      expect(clamped.left, greaterThanOrEqualTo(12));
+      expect(clamped.top, greaterThanOrEqualTo(12));
+      expect(painter(tester).region, selection);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  test(
+    'Expanded footprint selects a stable side before the inspector opens',
+    () {
+      const screen = Rect.fromLTWH(0, 0, 1000, 800);
+      const bottomSelection = Rect.fromLTWH(200, 420, 300, 200);
+      final above = chooseToolbarSide(
+        bottomSelection,
+        screen,
+        const Size(650, 240),
+      );
+      expect(above, ToolbarSide.above);
+      final layout = ToolbarLayout(
+        selection: bottomSelection,
+        screen: screen,
+        side: above,
+        reservedHeight: 240,
+      );
+      final collapsed = layout.getPositionForChild(
+        screen.size,
+        const Size(650, 60),
+      );
+      final expanded = layout.getPositionForChild(
+        screen.size,
+        const Size(650, 220),
+      );
+      expect(
+        collapsed.dy + 60,
+        expanded.dy + 220,
+        reason:
+            'The primary tools keep their bottom anchor as menus expand upward',
+      );
+      const topSelection = Rect.fromLTWH(200, 100, 300, 200);
+      final below = chooseToolbarSide(
+        topSelection,
+        screen,
+        const Size(650, 240),
+      );
+      expect(below, ToolbarSide.below);
+      final downLayout = ToolbarLayout(
+        selection: topSelection,
+        screen: screen,
+        side: below,
+        reservedHeight: 240,
+      );
+      expect(
+        downLayout.getPositionForChild(screen.size, const Size(650, 60)).dy,
+        downLayout.getPositionForChild(screen.size, const Size(650, 220)).dy,
+      );
+    },
+  );
+  for (final viewport in [const Size(1200, 800), const Size(440, 600)]) {
+    testWidgets(
+      'Primary toolbar remains anchored during secondary menu animation at $viewport',
+      (tester) async {
+        await mount(tester, viewport);
+        final primary = find.byKey(const ValueKey('capture-primary-tools'));
+        final original = tester.getRect(primary);
+        await tester.tap(find.byTooltip('文字 · T'));
+        for (var i = 0; i < 12; i++) {
+          await tester.pump(const Duration(milliseconds: 30));
+          expect(
+            (tester.getRect(primary).topLeft - original.topLeft).distance,
+            lessThan(.01),
+          );
+        }
+        await tester.tap(find.byTooltip('文字背景颜色'));
+        for (var i = 0; i < 12; i++) {
+          await tester.pump(const Duration(milliseconds: 30));
+          expect(
+            (tester.getRect(primary).topLeft - original.topLeft).distance,
+            lessThan(.01),
+          );
+        }
+        await press(tester, '文字背景颜色');
+        await press(tester, '调整选区 · V');
+        expect(
+          (tester.getRect(primary).topLeft - original.topLeft).distance,
+          lessThan(.01),
+        );
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
   for (final viewport in [const Size(800, 600), const Size(400, 300)]) {
     testWidgets(
       'Clicks and tiny closed shapes are ignored in logical pixels at $viewport',

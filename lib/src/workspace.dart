@@ -341,6 +341,49 @@ class Preferences extends StatelessWidget {
           ),
           const SizedBox(height: 24),
           GlassPanel(
+            child: Row(
+              children: [
+                Icon(
+                  CupertinoIcons.globe,
+                  size: 21,
+                  color: cs.onSurfaceVariant,
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        '翻译 API Key',
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        '管理翻译服务商、模型与密钥',
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: cs.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                ToolButton(
+                  label: '配置翻译 API Key',
+                  onPressed: c.busy
+                      ? null
+                      : () => c.openTranslation(settings: true),
+                  child: const Text('配置'),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+          GlassPanel(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
@@ -505,15 +548,6 @@ class Preferences extends StatelessWidget {
                   ),
                 ),
               ],
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.only(top: 12),
-            child: ToolButton(
-              label: '翻译渠道与 API Key',
-              icon: CupertinoIcons.globe,
-              onPressed: () => c.openTranslation(settings: true),
-              child: const Text('翻译渠道与 API Key…'),
             ),
           ),
           if (Platform.isMacOS)

@@ -10,8 +10,8 @@ import 'package:flutter/services.dart';
 class ToolbarWrap extends Wrap {
   const ToolbarWrap({
     super.key,
-    super.spacing,
-    super.runSpacing,
+    super.spacing = 4,
+    super.runSpacing = 4,
     super.alignment,
     super.crossAxisAlignment,
     super.children,
@@ -88,7 +88,7 @@ class GlassPanel extends StatelessWidget {
                 color: tintOpacity == null || MediaQuery.highContrastOf(context)
                     ? (dark ? const Color(0xff555559) : const Color(0xffdedee2))
                     : (dark ? Colors.white : Colors.black).withValues(
-                        alpha: dark ? .20 : .10,
+                        alpha: dark ? .32 : .24,
                       ),
                 width: .7,
               ),
@@ -99,6 +99,79 @@ class GlassPanel extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Secondary controls share one inset surface, distinct from the main tools.
+class ToolbarInspectorSurface extends StatelessWidget {
+  const ToolbarInspectorSurface({super.key, required this.child, this.title});
+  final Widget child;
+  final String? title;
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Container(
+      margin: const EdgeInsets.only(top: 6),
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: cs.surface.withValues(alpha: .80),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: cs.outlineVariant),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (title != null) ...[
+            Text(
+              title!,
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                color: cs.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: 6),
+          ],
+          child,
+        ],
+      ),
+    );
+  }
+}
+
+class ToolbarOptionGroup extends StatelessWidget {
+  const ToolbarOptionGroup({
+    super.key,
+    required this.label,
+    required this.children,
+  });
+  final String label;
+  final List<Widget> children;
+  @override
+  Widget build(BuildContext context) => Column(
+    mainAxisSize: MainAxisSize.min,
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text(
+        label,
+        style: TextStyle(
+          fontSize: 11,
+          fontWeight: FontWeight.w600,
+          color: Theme.of(context).colorScheme.onSurfaceVariant,
+        ),
+      ),
+      const SizedBox(height: 4),
+      Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (final (index, child) in children.indexed) ...[
+            if (index > 0) const SizedBox(width: 4),
+            child,
+          ],
+        ],
+      ),
+    ],
+  );
 }
 
 class ToolButton extends StatefulWidget {
@@ -162,7 +235,7 @@ class _ToolButtonState extends State<ToolButton> {
             onTapUp: (_) => setState(() => pressed = false),
             onTapCancel: () => setState(() => pressed = false),
             child: AnimatedScale(
-              scale: pressed ? .91 : 1,
+              scale: pressed ? .96 : 1,
               duration: MediaQuery.disableAnimationsOf(context)
                   ? Duration.zero
                   : const Duration(milliseconds: 110),
@@ -187,32 +260,39 @@ class _ToolButtonState extends State<ToolButton> {
                   color: widget.primary
                       ? c.primary
                       : widget.selected
-                      ? c.primary.withValues(alpha: .14)
+                      ? c.primaryContainer
                       : pressed
-                      ? c.onSurface.withValues(alpha: .12)
+                      ? c.onSurface.withValues(alpha: .14)
                       : hover
-                      ? c.onSurface.withValues(alpha: .07)
+                      ? c.onSurface.withValues(alpha: .10)
                       : Colors.transparent,
                   borderRadius: BorderRadius.circular(8),
                   border: Border.all(
-                    color: focused ? c.primary : Colors.transparent,
+                    color: focused || widget.selected
+                        ? c.primary
+                        : Colors.transparent,
+                    width: focused ? 2 : 1,
                   ),
                 ),
                 child: Opacity(
-                  opacity: widget.onPressed == null ? .3 : 1,
+                  opacity: widget.onPressed == null ? .42 : 1,
                   child: IconTheme(
                     data: IconThemeData(
-                      size: widget.size < 30 ? 16 : 18,
+                      size: 18,
                       color: widget.primary
                           ? c.onPrimary
                           : widget.selected
-                          ? c.primary
+                          ? c.onPrimaryContainer
                           : c.onSurface,
                     ),
                     child: DefaultTextStyle(
                       style: Theme.of(context).textTheme.bodySmall!.copyWith(
                         fontSize: 12,
-                        color: widget.primary ? c.onPrimary : c.onSurface,
+                        color: widget.primary
+                            ? c.onPrimary
+                            : widget.selected
+                            ? c.onPrimaryContainer
+                            : c.onSurface,
                       ),
                       child: widget.child ?? Icon(widget.icon),
                     ),

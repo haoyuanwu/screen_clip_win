@@ -40,7 +40,11 @@ class ClipController extends ChangeNotifier {
   final DesktopBridge bridge;
   final TranslationController translation;
   bool translationSettingsInitially = false;
+  String _translationReturnPanel = 'palette';
   Future<void> openTranslation({bool settings = false}) async {
+    if (panel != 'translation') {
+      _translationReturnPanel = panel == 'settings' ? 'settings' : 'palette';
+    }
     translationSettingsInitially = settings;
     panel = 'translation';
     changed();
@@ -49,9 +53,9 @@ class ClipController extends ChangeNotifier {
 
   Future<void> closeTranslation() async {
     translation.cancel();
-    panel = 'palette';
+    panel = _translationReturnPanel;
     changed();
-    await bridge.present('palette');
+    await bridge.present(panel);
   }
 
   String? directory, error;

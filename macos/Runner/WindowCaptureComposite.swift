@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import ScreenCaptureKit
 
 /// AppKit screen frames may have negative origins and different backing scales.
 /// A common canvas preserves their desktop arrangement; each screen is sampled
@@ -106,6 +107,23 @@ struct CursorPixelNudger {
 /// Places an isolated window at its original screen position. Input coordinates
 /// are source pixels with a top-left origin; Quartz drawing uses bottom-left.
 enum WindowCaptureComposite {
+  /// An independent window can arrive at nominal (1x) resolution even when
+  /// the desktop canvas uses Retina pixels. Explicitly fill the requested
+  /// surface; otherwise ScreenCaptureKit may leave a smaller window image
+  /// inside a transparent, desktop-scaled output buffer.
+  @available(macOS 14.0, *)
+  static func configuration(pixelSize: CGSize) -> SCStreamConfiguration {
+    let config = SCStreamConfiguration()
+    config.width = max(1, Int(pixelSize.width.rounded()))
+    config.height = max(1, Int(pixelSize.height.rounded()))
+    config.scalesToFit = true
+    config.destinationRect = CGRect(x: 0, y: 0, width: config.width, height: config.height)
+    config.preservesAspectRatio = true
+    config.showsCursor = false
+    config.ignoreShadowsSingleWindow = true
+    return config
+  }
+
   static func image(background: CGImage, window: CGImage, pixelRect: CGRect) -> CGImage? {
     guard pixelRect.width > 0, pixelRect.height > 0,
           let context = CGContext(data: nil, width: background.width, height: background.height,
