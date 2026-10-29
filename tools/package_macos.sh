@@ -21,6 +21,17 @@ mkdir -p "$root/dist"
 stage="$(mktemp -d "$root/dist/macos-$version.XXXXXX")"
 app="$stage/定格T.app"
 ditto "$source_app" "$app"
+if [[ "$target" == arm64 ]]; then
+  helper_source="${ARGOS_HELPER_ARM64:-}"
+else
+  helper_source="${ARGOS_HELPER_X64:-}"
+fi
+if [[ -n "$helper_source" ]]; then
+  test -x "$helper_source/screenclip_argos"
+  ditto "$helper_source" "$app/Contents/Helpers/argos"
+else
+  python3 "$root/tools/argos/build.py" --destination "$app/Contents/Helpers/argos"
+fi
 ln -s /Applications "$stage/Applications"
 
 # Distribution is ad-hoc until a Developer ID identity is configured. Sign
@@ -35,12 +46,14 @@ app = Path(sys.argv[1])
 # Thin every Mach-O file, including Flutter, plugins and bundled native libraries.
 magics = {b'\xca\xfe\xba\xbe', b'\xbe\xba\xfe\xca', b'\xca\xfe\xba\xbf', b'\xbf\xba\xfe\xca',
           b'\xcf\xfa\xed\xfe', b'\xfe\xed\xfa\xcf', b'\xce\xfa\xed\xfe', b'\xfe\xed\xfa\xce'}
+native_binaries = []
 for item in app.rglob('*'):
     if item.is_symlink() or not item.is_file():
         continue
     with item.open('rb') as source:
         if source.read(4) not in magics:
             continue
+    native_binaries.append(item)
     archs = subprocess.check_output(['lipo', '-archs', str(item)], text=True).split()
     if sys.argv[3] not in archs:
         raise RuntimeError(f'{item} does not support {sys.argv[3]}')
@@ -50,9 +63,13 @@ for item in app.rglob('*'):
         subprocess.run(['lipo', str(item), '-thin', sys.argv[3], '-output', str(output)], check=True)
         os.replace(output, item)
         item.chmod(mode)
-nested = list(app.rglob('*.dylib')) + list(app.rglob('*.framework'))
+nested = native_binaries + list(app.rglob('*.framework'))
 for item in sorted(nested, key=lambda p: len(p.parts), reverse=True):
     subprocess.run(['codesign', '--force', '--sign', '-', str(item)], check=True)
+# Sandboxed child inherits the parent app's container/network permissions.
+helper_entitlements = Path(sys.argv[2]).parent / 'ArgosHelper.entitlements'
+helper = app / 'Contents/Helpers/argos/screenclip_argos'
+subprocess.run(['codesign', '--force', '--sign', '-', '--entitlements', str(helper_entitlements), str(helper)], check=True)
 subprocess.run(['codesign', '--force', '--sign', '-', '--entitlements', sys.argv[2], str(app)], check=True)
 subprocess.run(['codesign', '--verify', '--deep', '--strict', str(app)], check=True)
 PY

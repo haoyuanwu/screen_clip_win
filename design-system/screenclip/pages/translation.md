@@ -71,13 +71,3 @@
 - 验证包含菜单动画中间帧、文字菜单及背景色板的连续开关、窄屏、大字号和多屏约束。
 
 - 工具栏顶部尺寸与三横线区域支持拖动移动；保持主工具与菜单锚点，移动不影响选区或标注。位置限制在当前显示器安全区域，重新框选后恢复自动定位。
-
-
-## 腾讯云 TMT 渠道
-
-- 新增腾讯云 TMT 预设，与 Chat Completions 渠道区分：SecretId、SecretKey、Region（默认 ap-guangzhou）及 ProjectId（默认 0），不显示模型字段。两个凭证都使用安全存储，编辑时留空保留，清除 Key 时一并清除两项。既有用户加载配置时补充新预设，不覆盖已有配置与当前渠道。
-- TC3-HMAC-SHA256 签名使用 UTC 日期与实际发送的 UTF-8 请求体，TextTranslate / 2018-03-21，密钥不作为 Bearer 发送。接口地址只允许腾讯云 TMT HTTPS 域名，不跟随重定向；不输出服务端原始错误或密钥。
-- 使用原生文本接口逐段翻译，保留 OCR 段落顺序；应用侧保守按不超过 2000 UTF-16 单位拆分，不切断 Unicode 标量，保留段落空白；请求间隔 220ms，取消后不启动后续请求，无自动付费重试。
-- “验证云密钥”发送 Hello 文本检查签名、地域、项目和服务权限。截图继续使用原地配置、图上译文、可移动对照窗口和小选区默认对照模式。
-- 配置页说明文本翻译服务计划于 2030-12-31 停止，未来可迁移 TokenHub；不更改用户选择，不自动替换为其他服务。
-- 依据：[腾讯云签名 v3](https://cloud.tencent.com/document/api/213/30654)、[官方 SDK 3.0.1300 文本接口定义](https://github.com/TencentCloud/tencentcloud-sdk-python/blob/3.0.1300/tencentcloud/tmt/v20180321/models.py)、[退市公告](https://cloud.tencent.com/announce/detail/2482)。验证签名使用独立 Python HMAC 计算的固定输入测试，不使用真实账号密钥。

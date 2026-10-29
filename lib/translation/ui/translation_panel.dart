@@ -6,6 +6,7 @@ import '../../src/ui/controls.dart';
 import '../../src/ui/capture_mirrors.dart' show scheduleCaptureFrame;
 import '../controller.dart';
 import '../models.dart';
+import 'argos_settings.dart';
 import 'channel_settings.dart';
 
 class TranslationPanel extends StatefulWidget {
@@ -29,6 +30,7 @@ class TranslationPanel extends StatefulWidget {
 class _TranslationPanelState extends State<TranslationPanel> {
   late bool settings = widget.settingsInitially;
   final source = TextEditingController();
+  final panelFocus = FocusNode();
   String? chooser, copyStatus;
   TranslationResult? copiedResult;
   @override
@@ -36,16 +38,21 @@ class _TranslationPanelState extends State<TranslationPanel> {
     super.initState();
     widget.controller.addListener(scheduleCaptureFrame);
     widget.controller.initialize();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) panelFocus.requestFocus();
+    });
   }
 
   @override
   void dispose() {
     widget.controller.removeListener(scheduleCaptureFrame);
+    panelFocus.dispose();
     source.dispose();
     super.dispose();
   }
 
   void close() {
+    widget.controller.needsLocalModels = false;
     widget.controller.cancel();
     widget.onClose();
   }
@@ -130,9 +137,45 @@ class _TranslationPanelState extends State<TranslationPanel> {
           selection: TextSelection.collapsed(offset: c.sourceText.length),
         );
       }
+      if (c.needsLocalModels && c.activeChannel?.isLocal == true) {
+        return CallbackShortcuts(
+          bindings: {const SingleActivator(LogicalKeyboardKey.escape): close},
+          child: Material(
+            color: colors.surface,
+            borderRadius: BorderRadius.circular(16),
+            clipBehavior: Clip.antiAlias,
+            child: Focus(
+              autofocus: true,
+              focusNode: panelFocus,
+              child: ArgosSettings(
+                controller: c,
+                channel: c.activeChannel!,
+                onBack: () {
+                  c.needsLocalModels = false;
+                  if (widget.onConfigured != null) {
+                    widget.onClose();
+                  } else {
+                    c.changed();
+                  }
+                },
+                onSaved: () {
+                  c.needsLocalModels = false;
+                  if (widget.onConfigured != null) {
+                    widget.onConfigured!();
+                  } else {
+                    c.changed();
+                    c.translate();
+                  }
+                },
+              ),
+            ),
+          ),
+        );
+      }
       final ready =
-          c.activeChannel?.configured == true &&
-          c.activeChannel?.isEnabled == true;
+          c.activeChannel?.isEnabled == true &&
+          (c.activeChannel?.isLocal == true ||
+              c.activeChannel?.configured == true);
       final reduce = MediaQuery.disableAnimationsOf(context);
       return CallbackShortcuts(
         bindings: {
@@ -146,6 +189,7 @@ class _TranslationPanelState extends State<TranslationPanel> {
         },
         child: Focus(
           autofocus: true,
+          focusNode: panelFocus,
           child: ClipRRect(
             borderRadius: BorderRadius.circular(16),
             child: Material(
@@ -174,7 +218,11 @@ class _TranslationPanelState extends State<TranslationPanel> {
                                 ),
                               ),
                               Text(
-                                settings ? '渠道与 API Key' : '文字直达所选渠道 · 不上传图片',
+                                settings
+                                    ? '本地翻译与在线渠道'
+                                    : c.activeChannel?.isLocal == true
+                                    ? '本机离线处理 · 不上传文字或图片'
+                                    : '文字直达所选渠道 · 不上传图片',
                                 style: TextStyle(
                                   fontSize: 11,
                                   color: colors.onSurfaceVariant,
@@ -333,7 +381,7 @@ class _TranslationPanelState extends State<TranslationPanel> {
                                           Expanded(
                                             child: Text(
                                               c.configError ??
-                                                  '先配置一个翻译渠道，即可开始使用自己的 API Key',
+                                                  '先准备本地语言包，或配置并启用在线翻译渠道',
                                               style: const TextStyle(
                                                 fontSize: 12,
                                               ),

@@ -302,6 +302,11 @@ class ClipController extends ChangeNotifier {
     panel = 'color';
     changed();
     await bridge.present('color');
+    if (!_disposed &&
+        hasListeners &&
+        defaultTargetPlatform == TargetPlatform.windows) {
+      WidgetsBinding.instance.scheduleWarmUpFrame();
+    }
   }
 
   void cancelCountdown() {

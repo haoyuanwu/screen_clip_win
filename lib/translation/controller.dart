@@ -5,6 +5,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import 'models.dart';
 import 'service.dart';
+import 'argos_engine.dart';
 
 abstract class ChannelStorage {
   Future<String?> read();
@@ -32,7 +33,9 @@ class TranslationController extends ChangeNotifier {
   final TranslationService service;
   List<TranslationChannel> _channels = defaultTranslationChannels();
   List<TranslationChannel> get channels => List.unmodifiable(_channels);
-  String activeId = 'zhipu';
+  String activeId = 'argos_local';
+  bool needsLocalModels = false;
+  ArgosOperation? _localProbe;
   TranslationChannel? get activeChannel =>
       _channels.where((c) => c.id == activeId).firstOrNull;
   TranslationLanguage from = TranslationLanguage.auto,
@@ -62,7 +65,9 @@ class TranslationController extends ChangeNotifier {
       if (_disposed) return;
       if (raw != null) {
         final data = jsonDecode(raw) as Map<String, dynamic>;
-        final channels = (data['channels'] as List)
+        final savedChannels = data['channels'] as List;
+        final channels = savedChannels
+            .where((v) => (v as Map)['id'] != 'tencent_tmt')
             .map(
               (v) => TranslationChannel.fromJson(
                 Map<String, dynamic>.from(v as Map),
@@ -78,8 +83,10 @@ class TranslationController extends ChangeNotifier {
           ...channels,
           ...defaultTranslationChannels().where((c) => !ids.contains(c.id)),
         ];
-        activeId =
-            data['activeId'] as String? ?? channels.firstOrNull?.id ?? '';
+        activeId = data['activeId'] as String? ?? 'argos_local';
+        if (!_channels.any((c) => c.id == activeId)) {
+          activeId = 'argos_local';
+        }
         from =
             TranslationLanguage.values
                 .where((v) => v.name == data['from'])
@@ -134,6 +141,7 @@ class TranslationController extends ChangeNotifier {
       from = source;
       to = target;
       result = null;
+      needsLocalModels = false;
       error = null;
       status = '';
       return true;
@@ -216,6 +224,12 @@ class TranslationController extends ChangeNotifier {
   Future<void> translate({List<String>? segments}) async {
     if (translating || extracting) return;
     final channel = activeChannel;
+    if (channel?.isLocal == true && !channel!.configured && channel.isEnabled) {
+      needsLocalModels = true;
+      error = '尚未下载中英语言包，下载后即可离线翻译';
+      changed();
+      return;
+    }
     if (channel == null || !channel.configured || !channel.isEnabled) {
       error = '请先配置并启用翻译渠道';
       changed();
@@ -233,6 +247,16 @@ class TranslationController extends ChangeNotifier {
     status = '正在通过 ${channel.name} 翻译';
     changed();
     try {
+      if (channel.isLocal) {
+        final probe = _localProbe = service.argos.run({'command': 'status'});
+        final state = await probe.future;
+        _localProbe = null;
+        if (_disposed || request != _request) return;
+        if (state['ready'] != true) {
+          needsLocalModels = true;
+          throw const TranslationException('语言包不存在，请先下载中英语言包');
+        }
+      }
       final task = _task = service.start(
         text: sourceText,
         from: from,
@@ -261,6 +285,8 @@ class TranslationController extends ChangeNotifier {
 
   void cancel({bool notify = true}) {
     _request++;
+    _localProbe?.cancel();
+    _localProbe = null;
     _task?.cancel();
     _task = null;
     if (translating || extracting) status = '已取消，可继续编辑原文';
@@ -276,6 +302,7 @@ class TranslationController extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    service.dispose();
     cancel(notify: false);
     super.dispose();
   }

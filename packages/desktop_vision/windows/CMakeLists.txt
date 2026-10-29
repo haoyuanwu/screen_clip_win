@@ -36,6 +36,7 @@ add_library(${PLUGIN_NAME} SHARED
 # application-level CMakeLists.txt. This can be removed for plugins that want
 # full control over build settings.
 apply_standard_settings(${PLUGIN_NAME})
+target_compile_options(${PLUGIN_NAME} PRIVATE /utf-8)
 
 # Symbols are hidden by default to reduce the chance of accidental conflicts
 # between plugins. This should not be removed; any symbols that should be
@@ -50,9 +51,9 @@ target_include_directories(${PLUGIN_NAME} INTERFACE
   "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(${PLUGIN_NAME} PRIVATE flutter flutter_wrapper_plugin)
 
-# C++/WinRT 需要 C++17，且必须链接 windowsapp.lib 才能调用 WinRT API
+# C++/WinRT 使用标准 C++20 协程，且必须链接 windowsapp.lib 才能调用 WinRT API
 # （Windows.Media.Ocr / Windows.Graphics.Imaging 等）。
-target_compile_features(${PLUGIN_NAME} PRIVATE cxx_std_17)
+target_compile_features(${PLUGIN_NAME} PRIVATE cxx_std_20)
 target_link_libraries(${PLUGIN_NAME} PRIVATE windowsapp.lib)
 
 # List of absolute paths to libraries that should be bundled with the plugin.
@@ -92,7 +93,8 @@ add_executable(${TEST_RUNNER}
   ${PLUGIN_SOURCES}
 )
 apply_standard_settings(${TEST_RUNNER})
-target_compile_features(${TEST_RUNNER} PRIVATE cxx_std_17)
+target_compile_options(${TEST_RUNNER} PRIVATE /utf-8)
+target_compile_features(${TEST_RUNNER} PRIVATE cxx_std_20)
 target_link_libraries(${TEST_RUNNER} PRIVATE windowsapp.lib)
 target_include_directories(${TEST_RUNNER} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(${TEST_RUNNER} PRIVATE flutter_wrapper_plugin)

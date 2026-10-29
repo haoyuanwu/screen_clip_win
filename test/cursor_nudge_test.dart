@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:screen_clip_win/src/controller.dart';
 import 'package:screen_clip_win/src/editor.dart';
+import 'package:screen_clip_win/src/workspace.dart';
 
 import 'widget_test.dart' show FakeBridge, sample;
 
@@ -13,6 +14,14 @@ class CursorBridge extends FakeBridge {
   Offset position = const Offset(100, 100);
   final moves = <Offset>[];
   bool fail = false;
+  final inputModes = <bool>[];
+  @override
+  Future<void> setTextInputActive(bool active) async {
+    inputModes.add(active);
+  }
+
+  @override
+  Future<bool> captureFrameReady(Size viewport) async => true;
   @override
   Future<Offset> nudgeCursor(int dx, int dy) async {
     moves.add(Offset(dx.toDouble(), dy.toDouble()));
@@ -74,6 +83,49 @@ Future<void> key(WidgetTester tester, LogicalKeyboardKey value) async {
 }
 
 void main() {
+  testWidgets(
+    'Resident palette focus transfers to capture; WASD and Esc work before clicking',
+    (tester) async {
+      tester.view.physicalSize = const Size(800, 600);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final bridge = CursorBridge();
+      final controller = ClipController(bridge: bridge)..ready = true;
+      addTearDown(controller.dispose);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: ListenableBuilder(
+            listenable: controller,
+            builder: (context, _) => Workspace(controller: controller),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.runAsync(() async {
+        final image = await sample(width: 800, height: 600);
+        final png = (await image.toByteData(format: ui.ImageByteFormat.png))!
+            .buffer
+            .asUint8List();
+        image.dispose();
+        await controller.loadBytes(png);
+      });
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 60)),
+      );
+      await tester.pumpAndSettle();
+      expect(editor(tester).focus.hasFocus, isTrue);
+      await key(tester, LogicalKeyboardKey.keyD);
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 30)),
+      );
+      await tester.pumpAndSettle();
+      expect(bridge.moves, [const Offset(1, 0)]);
+      await key(tester, LogicalKeyboardKey.escape);
+      expect(controller.clip, isNull);
+      expect(bridge.hidden, isTrue);
+    },
+  );
   testWidgets(
     'WASD nudges in source pixels at scaled size, repeats, clamps and updates smart hover',
     (tester) async {
@@ -154,6 +206,7 @@ void main() {
       await tester.tapAt(const Offset(120, 120));
       await tester.pumpAndSettle();
       await tester.enterText(find.byType(EditableText), 'Text');
+      expect(bridge.inputModes.last, isTrue);
       final movesBeforeTyping = bridge.moves.length;
       for (final value in [
         LogicalKeyboardKey.keyW,
@@ -166,6 +219,7 @@ void main() {
       expect(bridge.moves.length, movesBeforeTyping);
       await tester.tap(find.byTooltip('完成文字'));
       await tester.pumpAndSettle();
+      expect(bridge.inputModes.last, isFalse);
       await key(tester, LogicalKeyboardKey.keyV);
       final before = painter(tester).marks.single;
       final center = textToWorld(

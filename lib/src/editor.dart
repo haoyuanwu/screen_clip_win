@@ -1,3 +1,5 @@
+import '../translation/ui/language_controls.dart';
+
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
@@ -571,9 +573,11 @@ class CaptureEditor extends StatefulWidget {
 
 class _CaptureEditorState extends State<CaptureEditor> {
   bool translationOpen = false;
+  bool translationLanguagesOpen = false;
   void closeTranslation() {
     widget.controller.translation.cancel();
     setState(() => translationOpen = false);
+    updateNativeTextInput();
     focus.requestFocus();
     final channel = widget.controller.translation.activeChannel;
     if (channel?.configured == true && channel?.isEnabled == true) {
@@ -647,6 +651,7 @@ class _CaptureEditorState extends State<CaptureEditor> {
     dismissTextPrompt();
     setState(() {
       translatingImage = true;
+      translationLanguagesOpen = false;
       translationReading = false;
       imageTranslationFailure = null;
       imageTranslationStatus = '正在准备翻译';
@@ -657,11 +662,15 @@ class _CaptureEditorState extends State<CaptureEditor> {
     if (!c.initialized ||
         c.activeChannel?.configured != true ||
         c.activeChannel?.isEnabled != true) {
+      c.needsLocalModels =
+          c.activeChannel?.isLocal == true &&
+          c.activeChannel?.isEnabled == true;
       setState(() {
         translatingImage = false;
         imageTranslationStatus = null;
         translationOpen = true;
       });
+      updateNativeTextInput();
       scheduleCaptureFrame();
       return;
     }
@@ -706,6 +715,11 @@ class _CaptureEditorState extends State<CaptureEditor> {
       setState(() => imageTranslationStatus = '正在翻译 ${texts.length} 处文字');
       scheduleCaptureFrame();
       await c.translate(segments: texts);
+      if (mounted && c.needsLocalModels && request == imageTranslationRequest) {
+        setState(() => translationOpen = true);
+        updateNativeTextInput();
+        return;
+      }
       if (!mounted || request != imageTranslationRequest) return;
       if (c.result == null) throw FormatException(c.error ?? '翻译已取消');
       final decoded = jsonDecode(c.result!.translatedText);
@@ -932,8 +946,18 @@ class _CaptureEditorState extends State<CaptureEditor> {
   @override
   void initState() {
     super.initState();
+    textFocus.addListener(updateNativeTextInput);
+    updateNativeTextInput();
     if (widget.clip.mode == 'screen') region = bounds;
     load();
+  }
+
+  void updateNativeTextInput() {
+    unawaited(
+      widget.controller.bridge
+          .setTextInputActive(textFocus.hasFocus || translationOpen)
+          .catchError((Object _) {}),
+    );
   }
 
   Future<void> load([Uint8List? bytes]) async {
@@ -990,6 +1014,9 @@ class _CaptureEditorState extends State<CaptureEditor> {
         if (!accepted && mounted && epoch == imageLoadEpoch) {
           notifyCaptureFrameReady(epoch);
         } else if (accepted && mounted && epoch == imageLoadEpoch) {
+          // The resident palette can retain the Flutter focus even after the
+          // native capture window is active; autofocus alone does not replace it.
+          if (textAnchor == null) focus.requestFocus();
           markCaptureMirrorsReady();
         }
       } catch (_) {}
@@ -1005,6 +1032,7 @@ class _CaptureEditorState extends State<CaptureEditor> {
     mosaic?.dispose();
     focus.dispose();
     textInput.dispose();
+    textFocus.removeListener(updateNativeTextInput);
     textFocus.dispose();
     clearOcr();
     super.dispose();
@@ -2195,8 +2223,9 @@ class _CaptureEditorState extends State<CaptureEditor> {
     setState(() => preparingSmartSelection = true);
     try {
       final frame = await widget.controller.bridge.focusCaptureWindow(index);
-      focusedCaptureWindow = index >= 0;
       if (!mounted) return;
+      focusedCaptureWindow = frame?['focused'] as bool? ?? index >= 0;
+      setState(() => loadError = null);
       if (frame?['bytes'] case final Uint8List bytes) await load(bytes);
     } catch (e) {
       if (mounted) setState(() => loadError = '窗口画面获取失败：$e');
@@ -2351,12 +2380,32 @@ class _CaptureEditorState extends State<CaptureEditor> {
         onChanged: locked ? null : onChanged,
       ),
     );
-    final inspector =
-        (readingPassages.isNotEmpty &&
-                (tool == MarkTool.select || readingActive)) ||
-            translatingImage ||
-            imageTranslationStatus != null ||
-            imageTranslationFailure != null
+    final inspector = translationLanguagesOpen
+        ? ToolbarWrap(
+            children: [
+              TranslationLanguages(
+                controller: widget.controller.translation,
+                disabled: translatingImage,
+              ),
+              ToolButton(
+                label: '按当前语言翻译',
+                icon: CupertinoIcons.globe,
+                onPressed: locked ? null : openTranslation,
+                child: const Text('翻译'),
+              ),
+              ToolButton(
+                label: '收起翻译语言',
+                icon: CupertinoIcons.xmark,
+                onPressed: () =>
+                    setState(() => translationLanguagesOpen = false),
+              ),
+            ],
+          )
+        : (readingPassages.isNotEmpty &&
+                  (tool == MarkTool.select || readingActive)) ||
+              translatingImage ||
+              imageTranslationStatus != null ||
+              imageTranslationFailure != null
         ? ToolbarWrap(
             children: [
               OcrStatus(
@@ -2391,7 +2440,10 @@ class _CaptureEditorState extends State<CaptureEditor> {
                 ),
                 ToolButton(
                   label: '配置翻译渠道',
-                  onPressed: () => setState(() => translationOpen = true),
+                  onPressed: () {
+                    setState(() => translationOpen = true);
+                    updateNativeTextInput();
+                  },
                   child: const Text('渠道设置'),
                 ),
               ],
@@ -2981,10 +3033,18 @@ class _CaptureEditorState extends State<CaptureEditor> {
             size: 28,
             label: '翻译选区文字',
             icon: CupertinoIcons.globe,
+            selected: translationLanguagesOpen,
             onPressed:
                 locked || image == null || region == null || active != null
                 ? null
-                : openTranslation,
+                : () {
+                    widget.controller.translation.initialize();
+                    setState(
+                      () =>
+                          translationLanguagesOpen = !translationLanguagesOpen,
+                    );
+                    scheduleCaptureFrame();
+                  },
           ),
           annotationButton((
             privacyTool,

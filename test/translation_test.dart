@@ -38,8 +38,8 @@ class MemoryChannels implements ChannelStorage {
   }
 }
 
-TranslationChannel readyChannel() =>
-    defaultTranslationChannels().first.copyWith(apiKey: 'test-secret-1234');
+TranslationChannel readyChannel() => defaultTranslationChannels().first
+    .copyWith(apiKey: 'test-secret-1234', isEnabled: true);
 TranslationService echoService() => TranslationService(
   clientFactory: () => MockClient(
     (request) async => http.Response(
@@ -79,6 +79,12 @@ Future<TranslationController> configured({
 class TranslateOcrBridge extends FakeBridge {
   TranslateOcrBridge() : super('unused');
   int recognized = 0;
+  final inputModes = <bool>[];
+  @override
+  Future<void> setTextInputActive(bool active) async {
+    inputModes.add(active);
+  }
+
   @override
   Future<OcrResult> recognizeText(Uint8List bytes) async {
     recognized++;
@@ -102,6 +108,61 @@ class TranslateOcrBridge extends FakeBridge {
 }
 
 void main() {
+  test('Online presets start disabled, local defaults enabled and saved choices are preserved', () async {
+    expect(
+      defaultTranslationChannels()
+          .where((c) => !c.isLocal)
+          .every((c) => !c.isEnabled),
+      isTrue,
+    );
+    final legacy = readyChannel().toJson()..remove('isEnabled');
+    expect(TranslationChannel.fromJson(legacy).isEnabled, isFalse);
+    final store = MemoryChannels();
+    final c = TranslationController(storage: store);
+    addTearDown(c.dispose);
+    await c.initialize();
+    await c.saveChannel(c.channels.first.copyWith(apiKey: 'configured-key'));
+    expect(c.channels.first.isEnabled, isFalse);
+    await c.saveChannel(c.channels.first.copyWith(isEnabled: true));
+    final restored = TranslationController(storage: store);
+    addTearDown(restored.dispose);
+    await restored.initialize();
+    expect(restored.channels.first.isEnabled, isTrue);
+    expect(
+      restored.channels
+          .skip(1)
+          .where((c) => !c.isLocal)
+          .every((c) => !c.isEnabled),
+      isTrue,
+    );
+  });
+  test(
+    'Removed TMT settings do not restore the channel or lose other keys',
+    () async {
+      final store = MemoryChannels()
+        ..value = jsonEncode({
+          'activeId': 'tencent_tmt',
+          'channels': [
+            readyChannel().toJson(),
+            {'id': 'tencent_tmt', 'secretId': 'old-id', 'apiKey': 'old-key'},
+          ],
+        });
+      final c = TranslationController(storage: store);
+      addTearDown(c.dispose);
+      await c.initialize();
+      expect(c.initialized, isTrue);
+      expect(c.channels.any((v) => v.id == 'tencent_tmt'), isFalse);
+      expect(c.activeChannel?.id, 'argos_local');
+      expect(
+        c.channels.singleWhere((v) => v.id == 'zhipu').apiKey,
+        'test-secret-1234',
+      );
+      await c.selectChannel('zhipu');
+      expect(store.value, isNot(contains('tencent_tmt')));
+      expect(store.value, isNot(contains('old-key')));
+      expect(store.value, contains('test-secret-1234'));
+    },
+  );
   testWidgets(
     'Settings exposes translation key configuration and returns to settings',
     (tester) async {
@@ -508,6 +569,10 @@ void main() {
         );
         await tester.pumpAndSettle();
         await tester.tap(find.byTooltip('翻译选区文字'));
+        await tester.pumpAndSettle();
+        expect(find.byTooltip('翻译语言'), findsNothing);
+        expect(find.byTooltip('切换翻译目标语言'), findsOneWidget);
+        await tester.tap(find.byTooltip('按当前语言翻译'));
         await tester.runAsync(
           () => Future<void>.delayed(const Duration(milliseconds: 100)),
         );
@@ -539,10 +604,12 @@ void main() {
         if (mode == 'missing') {
           expect(bridge.recognized, 0);
           expect(find.byType(TranslationPanel), findsOneWidget);
-          expect(find.text('翻译渠道'), findsOneWidget);
-          await tester.tap(find.byTooltip('关闭翻译 · Esc'));
+          expect(find.text('下载中英语言包'), findsOneWidget);
+          expect(bridge.inputModes.last, isTrue);
+          await tester.sendKeyEvent(LogicalKeyboardKey.escape);
           await tester.pumpAndSettle();
           expect(find.byType(TranslationPanel), findsNothing);
+          expect(bridge.inputModes.last, isFalse);
           expect(tester.takeException(), isNull);
           return;
         }

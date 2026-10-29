@@ -133,6 +133,8 @@ void main() {
           }),
         ),
       );
+      await translation.initialize();
+      await translation.selectChannel('zhipu');
       final bridge = ReadingOcrBridge();
       final c = ClipController(bridge: bridge, translation: translation)
         ..ready = true
@@ -175,9 +177,21 @@ void main() {
       final selection = capture().region;
       await tester.tap(find.byTooltip('翻译选区文字'));
       await tester.pumpAndSettle();
+      expect(find.byTooltip('翻译语言'), findsNothing);
+      expect(find.byTooltip('切换翻译目标语言'), findsOneWidget);
+      await tester.tap(find.byTooltip('按当前语言翻译'));
+      await tester.pumpAndSettle();
       expect(c.panel, 'capture');
       expect(identical(c.clip, clip), isTrue);
       expect(capture().region, selection);
+      expect(
+        translation.channels
+            .where((c) => !c.isLocal)
+            .every((c) => !c.isEnabled),
+        isTrue,
+      );
+      await tester.tap(find.byType(Switch).first);
+      await tester.pumpAndSettle();
       await tester.tap(find.text('配置').first);
       await tester.pumpAndSettle();
       await tester.enterText(input('API Key'), 'new-capture-key');

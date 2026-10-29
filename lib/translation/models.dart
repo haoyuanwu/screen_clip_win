@@ -22,25 +22,20 @@ class TranslationChannel {
     required this.model,
     this.apiKey = '',
     this.isCustom = false,
-    this.isEnabled = true,
+    this.isEnabled = false,
     this.keyUrl = '',
     this.createdAt,
-    this.secretId = '',
-    this.region = 'ap-guangzhou',
-    this.projectId = 0,
   });
   final String id, name, baseUrl, model, apiKey, keyUrl;
   final bool isCustom, isEnabled;
   final DateTime? createdAt;
-  final String secretId, region;
-  final int projectId;
-  bool get isTencentTmt => id == 'tencent_tmt';
-  bool get configured =>
-      apiKey.trim().isNotEmpty &&
-      (isTencentTmt
-          ? secretId.trim().isNotEmpty && region.trim().isNotEmpty
-          : model.trim().isNotEmpty);
-  String get keyHint => apiKey.isEmpty
+  bool get isLocal => id == 'argos_local';
+  bool get configured => isLocal
+      ? model == 'ready'
+      : apiKey.trim().isNotEmpty && model.trim().isNotEmpty;
+  String get keyHint => isLocal
+      ? (configured ? '语言包已准备 · 无需 Key' : '未下载语言包 · 无需 Key')
+      : apiKey.isEmpty
       ? '未配置 Key'
       : '已保存 · ••••${apiKey.length <= 4 ? '••••' : apiKey.substring(apiKey.length - 4)}';
   TranslationChannel copyWith({
@@ -49,9 +44,6 @@ class TranslationChannel {
     String? model,
     String? apiKey,
     bool? isEnabled,
-    String? secretId,
-    String? region,
-    int? projectId,
   }) => TranslationChannel(
     id: id,
     name: name ?? this.name,
@@ -62,9 +54,6 @@ class TranslationChannel {
     isEnabled: isEnabled ?? this.isEnabled,
     keyUrl: keyUrl,
     createdAt: createdAt,
-    secretId: secretId ?? this.secretId,
-    region: region ?? this.region,
-    projectId: projectId ?? this.projectId,
   );
   Map<String, Object?> toJson() => {
     'id': id,
@@ -76,9 +65,6 @@ class TranslationChannel {
     'isEnabled': isEnabled,
     'keyUrl': keyUrl,
     'createdAt': createdAt?.toIso8601String(),
-    'secretId': secretId,
-    'region': region,
-    'projectId': projectId,
   };
   factory TranslationChannel.fromJson(Map<String, dynamic> v) =>
       TranslationChannel(
@@ -88,12 +74,9 @@ class TranslationChannel {
         model: v['model'] as String,
         apiKey: v['apiKey'] as String? ?? '',
         isCustom: v['isCustom'] == true,
-        isEnabled: v['isEnabled'] != false,
+        isEnabled: v['isEnabled'] == true,
         keyUrl: v['keyUrl'] as String? ?? '',
         createdAt: DateTime.tryParse(v['createdAt'] as String? ?? ''),
-        secretId: v['secretId'] as String? ?? '',
-        region: v['region'] as String? ?? 'ap-guangzhou',
-        projectId: (v['projectId'] as num?)?.toInt() ?? 0,
       );
 }
 
@@ -142,11 +125,11 @@ List<TranslationChannel> defaultTranslationChannels() => [
     keyUrl: 'https://platform.openai.com',
   ),
   const TranslationChannel(
-    id: 'tencent_tmt',
-    name: '腾讯云 TMT',
-    model: 'TextTranslate',
-    baseUrl: 'https://tmt.tencentcloudapi.com',
-    keyUrl: 'https://console.cloud.tencent.com/cam/capi',
+    id: 'argos_local',
+    isEnabled: true,
+    name: '本地翻译 · Argos',
+    baseUrl: '',
+    model: '',
   ),
 ];
 

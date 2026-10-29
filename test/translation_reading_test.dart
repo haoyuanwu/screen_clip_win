@@ -218,6 +218,10 @@ void main() {
       );
       await tester.pumpAndSettle();
       await tester.tap(find.byTooltip('翻译选区文字'));
+      await tester.pumpAndSettle();
+      expect(find.byTooltip('翻译语言'), findsNothing);
+      expect(find.byTooltip('切换翻译目标语言'), findsOneWidget);
+      await tester.tap(find.byTooltip('按当前语言翻译'));
       await tester.runAsync(
         () => Future<void>.delayed(const Duration(milliseconds: 100)),
       );
@@ -398,6 +402,10 @@ void main() {
       await tester.dragFrom(const Offset(50, 100), const Offset(240, 120));
       await tester.pumpAndSettle();
       await tester.tap(find.byTooltip('翻译选区文字'));
+      await tester.pumpAndSettle();
+      expect(find.byTooltip('翻译语言'), findsNothing);
+      expect(find.byTooltip('切换翻译目标语言'), findsOneWidget);
+      await tester.tap(find.byTooltip('按当前语言翻译'));
       await tester.runAsync(
         () => Future<void>.delayed(const Duration(milliseconds: 100)),
       );

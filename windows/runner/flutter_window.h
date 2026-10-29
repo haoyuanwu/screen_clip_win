@@ -16,6 +16,8 @@ class FlutterWindow : public Win32Window {
   explicit FlutterWindow(const flutter::DartProject& project);
   virtual ~FlutterWindow();
 
+  void PrepareKeyboardMessage(MSG& message);
+
  protected:
   // Win32Window:
   bool OnCreate() override;

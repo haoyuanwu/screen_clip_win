@@ -1,4 +1,4 @@
-param([string]$Executable = (Join-Path $PSScriptRoot '..\build\windows\x64\runner\Debug\screen_clip_win.exe'), [switch]$AllowParallel)
+﻿param([string]$Executable = (Join-Path $PSScriptRoot '..\build\windows\x64\runner\Debug\screen_clip_win.exe'), [switch]$AllowParallel)
 $ErrorActionPreference = 'Stop'
 Add-Type -TypeDefinition @"
 using System;
@@ -41,6 +41,10 @@ public static class ClipSmoke {
  }
  [StructLayout(LayoutKind.Sequential)] public struct Rect { public int left,top,right,bottom; }
  [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr value);
+ [DllImport("user32.dll")] public static extern int GetWindowRgn(IntPtr hwnd,IntPtr region);
+ [DllImport("gdi32.dll")] public static extern IntPtr CreateRectRgn(int left,int top,int right,int bottom);
+ [DllImport("gdi32.dll")] public static extern bool PtInRegion(IntPtr region,int x,int y);
+ [DllImport("gdi32.dll")] public static extern bool DeleteObject(IntPtr value);
  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd,out Rect rect);
  [DllImport("user32.dll",EntryPoint="GetWindowLongPtrW")] public static extern IntPtr GetWindowLongPtr(IntPtr hwnd,int index);
  [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr hwnd);
@@ -48,11 +52,16 @@ public static class ClipSmoke {
    IntPtr found=IntPtr.Zero;
    EnumWindows((hwnd,p)=>{uint owner;GetWindowThreadProcessId(hwnd,out owner);var name=new StringBuilder(256);GetClassName(hwnd,name,256);if(owner==pid && name.ToString()=="DingGeTPinnedImage"){found=hwnd;return false;}return true;},IntPtr.Zero);return found;
  }
+ [StructLayout(LayoutKind.Sequential)] public struct CursorPoint { public int x,y; }
+ [DllImport("user32.dll")] public static extern bool GetCursorPos(out CursorPoint point);
+ [DllImport("user32.dll")] public static extern bool SetCursorPos(int x,int y);
  public static IntPtr Point(int x,int y) {return new IntPtr((y<<16)|(x&0xffff));}
 }
 "@
 $resolvedExecutable = (Resolve-Path -LiteralPath $Executable).Path
 if (-not $AllowParallel -and (Get-Process screen_clip_win -ErrorAction SilentlyContinue)) { throw 'Close the existing ScreenClip instance before running this smoke test.' }
+$originalCursor = New-Object ClipSmoke+CursorPoint
+[void][ClipSmoke]::GetCursorPos([ref]$originalCursor)
 $clipProcess = Start-Process -FilePath $resolvedExecutable -WindowStyle Hidden -PassThru
 try {
  Start-Sleep -Milliseconds 1800
@@ -130,6 +139,7 @@ try {
  # Copy via the custom toolbar; it preserves original PNG resolution.
  $pinScale = [ClipSmoke]::GetDpiForWindow($pin) / 96.0
  $copyX = ($after.right-$after.left) - [int](54*$pinScale)
+ [void][ClipSmoke]::SetCursorPos(($after.left+$copyX),($after.top+[int](17*$pinScale)))
  [void][ClipSmoke]::SendMessage($pin,0x0200,[IntPtr]::Zero,[ClipSmoke]::Point($copyX,[int](17*$pinScale)))
  Start-Sleep -Milliseconds 220
  [void][ClipSmoke]::SendMessage($pin,0x0201,[IntPtr]1,[ClipSmoke]::Point($copyX,[int](17*$pinScale)))
@@ -143,8 +153,39 @@ try {
  if ([ClipSmoke]::IsWindow($pin)) { throw 'Pin did not close on Esc.' }
  [void][ClipSmoke]::SetThreadDpiAwarenessContext($previousDpiContext)
  "PASS: pin appears topmost; overlay dismisses; clipboard unchanged until copy; wheel scales; copy keeps source resolution; Esc releases window."
+ # Global color picking must use its own overlay, then return a fixed desktop card.
+ $sequence = [ClipSmoke]::GetClipboardSequenceNumber()
+ [void][ClipSmoke]::PostMessage($window,0x0312,[IntPtr]73,[IntPtr]::Zero)
+ Start-Sleep -Milliseconds 1200
+ if (-not [ClipSmoke]::IsWindowVisible($window)) { throw 'Global color overlay did not appear.' }
+ $child = [ClipSmoke]::FindChild($window)
+ [void][ClipSmoke]::SendMessage($child,0x0200,[IntPtr]::Zero,[ClipSmoke]::Point(160,160))
+ [void][ClipSmoke]::SendMessage($child,0x0201,[IntPtr]1,[ClipSmoke]::Point(160,160))
+ [void][ClipSmoke]::SendMessage($child,0x0202,[IntPtr]::Zero,[ClipSmoke]::Point(160,160))
+ Start-Sleep -Milliseconds 500
+ $context = [ClipSmoke]::SetThreadDpiAwarenessContext([IntPtr](-4))
+ $colorRect = New-Object ClipSmoke+Rect
+ [void][ClipSmoke]::GetWindowRect($window,[ref]$colorRect)
+ $colorScale = [ClipSmoke]::GetDpiForWindow($window) / 96.0
+ if ([Math]::Abs(($colorRect.right-$colorRect.left)-280*$colorScale) -gt 4) { throw 'Fixed color did not return to the compact desktop card.' }
+ $region = [ClipSmoke]::CreateRectRgn(0,0,0,0)
+ try {
+   if ([ClipSmoke]::GetWindowRgn($window,$region) -le 0) { throw 'Fixed color window did not use the rounded card region.' }
+   if ([ClipSmoke]::PtInRegion($region,0,0)) { throw 'Color popup corner still has an outer background.' }
+   if (-not [ClipSmoke]::PtInRegion($region,[int](140*$colorScale),[int](80*$colorScale))) { throw 'Rounded popup region clips card content.' }
+   if (($colorRect.bottom-$colorRect.top) -ge 320*$colorScale) { throw 'Fixed color window retained its empty outer canvas.' }
+ } finally { [void][ClipSmoke]::DeleteObject($region) }
+ if ([ClipSmoke]::GetClipboardSequenceNumber() -ne $sequence) { throw 'Fixing color unexpectedly copied to clipboard.' }
+ [void][ClipSmoke]::SetThreadDpiAwarenessContext($context)
+ $child = [ClipSmoke]::FindChild($window)
+ [void][ClipSmoke]::PostMessage($child,0x0100,[IntPtr]27,[IntPtr]0x00010001)
+ [void][ClipSmoke]::PostMessage($child,0x0101,[IntPtr]27,[IntPtr](-1073676287))
+ Start-Sleep -Milliseconds 300
+ if ([ClipSmoke]::IsWindowVisible($window)) { throw 'Color card did not close with Esc.' }
+ "PASS: global color overlay fixes to a compact desktop card without changing clipboard; Esc closes it."
  "PASS: hidden startup; native capture; selection exports $($dimensions[0])x$($dimensions[1]) source pixels at $dpiScale DPI scale; no pre-confirm copy; Enter copies and dismisses; Esc cancels without copying."
 } finally {
+ [void][ClipSmoke]::SetCursorPos($originalCursor.x,$originalCursor.y)
  # Terminate only the process launched by this test; screenshots never touch disk.
  if (-not $clipProcess.HasExited) { $clipProcess.Kill(); $clipProcess.WaitForExit() }
 }

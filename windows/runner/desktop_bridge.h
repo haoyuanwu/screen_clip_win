@@ -2,6 +2,7 @@
 #include <flutter/method_channel.h>
 #include <flutter/standard_method_codec.h>
 #include <windows.h>
+#include <imm.h>
 #include <gdiplus.h>
 #include <dwmapi.h>
 #include <shellapi.h>
@@ -18,6 +19,7 @@
 #pragma comment(lib, "comdlg32.lib")
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "advapi32.lib")
+#pragma comment(lib, "imm32.lib")
 
 // One UI thread owns the channel, selection overlay, tray and hotkey.
 class DesktopBridge {
@@ -27,6 +29,26 @@ class DesktopBridge {
   HWND owner;
   std::vector<HWND> pins;
   uint64_t pin_sequence=0;
+  bool text_input_active=false, ime_suppressed=false;
+  HIMC saved_ime_context=nullptr;
+  void UpdateInputMode() {
+    HWND view=FindWindowExW(owner,nullptr,L"FLUTTERVIEW",nullptr);
+    if(!view) return;
+    const bool shortcuts_only=(capture_surface || color_surface) && !text_input_active;
+    if(shortcuts_only) {
+      if(HIMC context=ImmGetContext(view)) {
+        ImmNotifyIME(context,NI_COMPOSITIONSTR,CPS_CANCEL,0);ImmReleaseContext(view,context);
+        HIMC detached=ImmAssociateContext(view,nullptr);
+        if(detached) saved_ime_context=detached;
+      }
+      ime_suppressed=true;
+    } else if(ime_suppressed) {
+      if(saved_ime_context) ImmAssociateContext(view,saved_ime_context);
+      else if(text_input_active) ImmAssociateContextEx(view,nullptr,IACE_DEFAULT);
+      saved_ime_context=nullptr;ime_suppressed=false;
+    }
+  }
+
   std::unique_ptr<flutter::MethodChannel<Value>> channel;
   ULONG_PTR gdiplus = 0;
   NOTIFYICONDATAW tray{};
@@ -72,7 +94,7 @@ class DesktopBridge {
   DesktopBridge(HWND hwnd, flutter::BinaryMessenger* messenger):owner(hwnd) {
     Gdiplus::GdiplusStartupInput input; Gdiplus::GdiplusStartup(&gdiplus,&input,nullptr);
     channel=std::make_unique<flutter::MethodChannel<Value>>(messenger,"screenclip/desktop",&flutter::StandardMethodCodec::GetInstance());
-    channel->SetMethodCallHandler([this](const auto& call, std::unique_ptr<Result> result) {
+    channel->SetMethodCallHandler([this](const flutter::MethodCall<Value>& call, std::unique_ptr<Result> result) {
       const auto& method=call.method_name();
       try {
         if(method=="dataDirectory") {
@@ -112,18 +134,39 @@ class DesktopBridge {
             }
           }
           result->Success(Value(enabled?"enabled":"disabled"));
+        } else if(method=="setTextInputActive") {
+          text_input_active=std::get<bool>(*call.arguments());UpdateInputMode();result->Success();
         } else if(method=="registerHotkey") {
           AddTray(); result->Success(Value(RegisterHotKey(owner,71,MOD_CONTROL|MOD_SHIFT|MOD_NOREPEAT,'X')!=0));
         } else if(method=="registerColorHotkey") {
           result->Success(Value(RegisterHotKey(owner,73,MOD_CONTROL|MOD_SHIFT|MOD_NOREPEAT,'C')!=0));
         } else if(method=="present") {
           Present(std::get<std::string>(*call.arguments())); result->Success();
+        } else if(method=="resizeColorCard") {
+          if(!color_surface) {result->Success();return;}
+          const auto& args=std::get<flutter::EncodableMap>(*call.arguments());
+          const double logicalWidth=std::get<double>(args.at(Value("width")));
+          const double logicalHeight=std::get<double>(args.at(Value("height")));
+          if(!std::isfinite(logicalWidth) || !std::isfinite(logicalHeight) || logicalWidth<=0 || logicalHeight<=0) {
+            result->Error("color_size","颜色卡片尺寸无效");return;
+          }
+          RECT frame{};GetWindowRect(owner,&frame);MONITORINFO monitor{sizeof(monitor)};
+          GetMonitorInfoW(MonitorFromRect(&frame,MONITOR_DEFAULTTONEAREST),&monitor);
+          const auto& work=monitor.rcWork;const double dpi=GetDpiForWindow(owner)/96.0;
+          const int width=std::max(1,std::min(static_cast<int>(std::ceil(logicalWidth*dpi)),static_cast<int>(work.right-work.left)));
+          const int height=std::max(1,std::min(static_cast<int>(std::ceil(logicalHeight*dpi)),static_cast<int>(work.bottom-work.top)));
+          const int left=std::clamp(static_cast<int>(frame.left),static_cast<int>(work.left),static_cast<int>(work.right)-width);
+          const int top=std::clamp(static_cast<int>(frame.top),static_cast<int>(work.top),static_cast<int>(work.bottom)-height);
+          SetWindowPos(owner,HWND_TOPMOST,left,top,width,height,SWP_NOACTIVATE);
+          HRGN rounded=CreateRoundRectRgn(0,0,width+1,height+1,static_cast<int>(32*dpi),static_cast<int>(32*dpi));
+          if(rounded && !SetWindowRgn(owner,rounded,TRUE)) DeleteObject(rounded);
+          ActivateSurface();result->Success();
         } else if(method=="captureFrameReady") {
           capture_frame_ready=true;
           if(capture_presentation_pending)Present("capture");
           result->Success();
         } else if(method=="copied") { tray.uFlags=NIF_TIP;wcscpy_s(tray.szTip,L"图片已复制到剪贴板 · Ctrl+Shift+X 再次截图");Shell_NotifyIconW(NIM_MODIFY,&tray);result->Success();
-        } else if(method=="dismiss") { capture_presentation_pending=false;capture_frame_ready=false;ShowWindow(owner,SW_HIDE);RestoreFocusedWindow();SetWindowPos(owner,HWND_NOTOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE); result->Success();
+        } else if(method=="dismiss") { capture_surface=false;color_surface=false;text_input_active=false;UpdateInputMode();capture_presentation_pending=false;capture_frame_ready=false;ShowWindow(owner,SW_HIDE);RestoreFocusedWindow();SetWindowPos(owner,HWND_NOTOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE); result->Success();
         } else if(method=="capture") {
           if(pending) {result->Error("busy","Capture already in progress");return;}
           RestoreFocusedWindow();refreshing_selection=false;
@@ -171,9 +214,12 @@ class DesktopBridge {
                 ((GetWindowLongPtr(previous_above,GWL_EXSTYLE)&WS_EX_TOPMOST)!=0)!=previously_topmost))
               previous_above=GetWindow(previous_above,GW_HWNDPREV);
             if(!SetWindowPos(focused_window,HWND_TOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE)) {
-              RestoreFocusedWindow();result->Error("window","无法临时置顶目标窗口");return;
+              // UIPI can deny reordering elevated/system windows. Keep the frozen
+              // visible desktop selection instead of failing the screenshot.
+              RestoreFocusedWindow(false);
+              result->Success(Value(flutter::EncodableMap{{Value("focused"),Value(false)}}));return;
             }
-            SetForegroundWindow(focused_window);
+            // Do not transfer keyboard focus away from the capture editor.
           } else RestoreFocusedWindow();
           refreshing_selection=true;pending=std::move(result);
           was_visible=IsWindowVisible(owner)!=0;ShowWindow(owner,SW_HIDE);
@@ -211,7 +257,8 @@ class DesktopBridge {
           const auto text=Wide(std::get<std::string>(args.at(Value("text"))));
           const auto status=std::get<std::string>(args.at(Value("status")));
           std::vector<PinnedImageWindow::TextGlyph> glyphs;
-          for(const auto& item:std::get<flutter::EncodableList>(args.at(Value("glyphs")))) {
+          const auto& glyphItems = std::get<flutter::EncodableList>(args.at(Value("glyphs")));
+          for(const auto& item : glyphItems) {
             const auto& g=std::get<flutter::EncodableMap>(item);
             const int start=std::get<int32_t>(g.at(Value("start"))),end=std::get<int32_t>(g.at(Value("end")));
             if(start<0 || end<=start || end>static_cast<int>(text.size()))continue;
@@ -261,6 +308,7 @@ class DesktopBridge {
     });
   }
   ~DesktopBridge() {
+    capture_surface=false;color_surface=false;UpdateInputMode();
     RestoreFocusedWindow();
     for(auto hwnd:pins) if(IsWindow(hwnd)) DestroyWindow(hwnd);
     UnregisterHotKey(owner,71);UnregisterHotKey(owner,73); Shell_NotifyIconW(NIM_DELETE,&tray);
@@ -274,25 +322,35 @@ class DesktopBridge {
     wcscpy_s(tray.szTip,L"定格T截图 | Ctrl+Shift+X");Shell_NotifyIconW(NIM_ADD,&tray);
     tray.uFlags=NIF_INFO;wcscpy_s(tray.szInfoTitle,L"定格T已就绪");wcscpy_s(tray.szInfo,L"按 Ctrl+Shift+X 截图，右键托盘图标打开标注和设置。");tray.dwInfoFlags=NIIF_INFO;Shell_NotifyIconW(NIM_MODIFY,&tray);
   }
+  void ActivateSurface(int command=SW_SHOW) {
+    ShowWindow(owner,command);SetForegroundWindow(owner);
+    if(GetForegroundWindow()==owner) {
+      HWND view=FindWindowExW(owner,nullptr,L"FLUTTERVIEW",nullptr);
+      if(view) SetFocus(view);
+    }
+    UpdateInputMode();
+  }
   void Present(const std::string& panel) {
     translation_surface=panel=="translation";
     if(!original_style){original_style=GetWindowLongPtr(owner,GWL_STYLE);original_exstyle=GetWindowLongPtr(owner,GWL_EXSTYLE);}
     color_surface=panel=="color";
     if(color_surface) {
+      ShowWindow(owner,SW_HIDE);
       RestoreFocusedWindow();capture_surface=false;
       SetWindowLongPtr(owner,GWL_STYLE,WS_POPUP);SetWindowLongPtr(owner,GWL_EXSTYLE,WS_EX_TOOLWINDOW|WS_EX_TOPMOST);
       POINT point{};GetCursorPos(&point);MONITORINFO monitor{sizeof(monitor)};GetMonitorInfoW(MonitorFromPoint(point,MONITOR_DEFAULTTONEAREST),&monitor);
-      const double dpi=GetDpiForWindow(owner)/96.0;const int width=static_cast<int>(300*dpi),height=static_cast<int>(320*dpi);
+      const double dpi=GetDpiForWindow(owner)/96.0;const int width=static_cast<int>(280*dpi),height=static_cast<int>(320*dpi);
       const int x=std::clamp(static_cast<int>(point.x+16),static_cast<int>(monitor.rcWork.left),std::max(static_cast<int>(monitor.rcWork.left),static_cast<int>(monitor.rcWork.right)-width));
       const int y=std::clamp(static_cast<int>(point.y+16),static_cast<int>(monitor.rcWork.top),std::max(static_cast<int>(monitor.rcWork.top),static_cast<int>(monitor.rcWork.bottom)-height));
-      SetWindowPos(owner,HWND_TOPMOST,x,y,width,height,SWP_FRAMECHANGED|SWP_SHOWWINDOW);ShowWindow(owner,SW_SHOW);SetForegroundWindow(owner);return;
+      SetWindowPos(owner,HWND_TOPMOST,x,y,width,height,SWP_FRAMECHANGED|SWP_NOACTIVATE);return;
     }
+    SetWindowRgn(owner,nullptr,TRUE);
     if(panel=="capture") {
       capture_surface=true;SetWindowLongPtr(owner,GWL_STYLE,WS_POPUP);SetWindowLongPtr(owner,GWL_EXSTYLE,WS_EX_TOOLWINDOW|WS_EX_TOPMOST);
       SetWindowPos(owner,HWND_TOPMOST,desktop.left,desktop.top,desktop.right-desktop.left,desktop.bottom-desktop.top,SWP_FRAMECHANGED|SWP_NOACTIVATE);
       if(!capture_frame_ready) {capture_presentation_pending=true;return;}
       capture_presentation_pending=false;
-      ShowWindow(owner,SW_SHOW);SetForegroundWindow(owner);return;
+      ActivateSurface();return;
     }
     const HWND foreground=GetForegroundWindow();if(foreground!=owner)before_tray=foreground;
     RestoreFocusedWindow();capture_surface=false;SetWindowLongPtr(owner,GWL_STYLE,original_style);SetWindowLongPtr(owner,GWL_EXSTYLE,original_exstyle);
@@ -303,7 +361,7 @@ class DesktopBridge {
     AdjustWindowRectEx(&frame,static_cast<DWORD>(GetWindowLongPtr(owner,GWL_STYLE)),FALSE,static_cast<DWORD>(GetWindowLongPtr(owner,GWL_EXSTYLE)));width=frame.right-frame.left;height=frame.bottom-frame.top;
     RECT work{};SystemParametersInfoW(SPI_GETWORKAREA,0,&work,0);
     SetWindowPos(owner,HWND_TOP,(work.right+work.left-width)/2,(work.bottom+work.top-height)/2,width,height,SWP_SHOWWINDOW);
-    ShowWindow(owner,SW_RESTORE);SetForegroundWindow(owner);
+    ActivateSurface(SW_RESTORE);
   }
   void Open(const std::string& panel) {channel->InvokeMethod("openPanel",std::make_unique<Value>(panel));}
   void Request(const std::string& value) {channel->InvokeMethod("captureRequested",std::make_unique<Value>(value));}
@@ -325,12 +383,38 @@ class DesktopBridge {
     }
     return false;
   }
+  flutter::EncodableList CaptureScreens() {
+          flutter::EncodableList screens;
+          struct ScreenContext {RECT desktop; flutter::EncodableList* screens;};ScreenContext screenContext{desktop,&screens};
+          EnumDisplayMonitors(nullptr,nullptr,[](HMONITOR monitor,HDC,LPRECT rectangle,LPARAM data)->BOOL {
+            auto context=reinterpret_cast<ScreenContext*>(data);MONITORINFO info{};info.cbSize=sizeof(info);if(!GetMonitorInfoW(monitor,&info))return TRUE;
+            const auto& r=info.rcMonitor;const auto& d=context->desktop;
+            Value display(flutter::EncodableMap{{Value("x"),Value(static_cast<int32_t>(r.left-d.left))},{Value("y"),Value(static_cast<int32_t>(r.top-d.top))},{Value("width"),Value(static_cast<int32_t>(r.right-r.left))},{Value("height"),Value(static_cast<int32_t>(r.bottom-r.top))}});
+            if(info.dwFlags&MONITORINFOF_PRIMARY)context->screens->insert(context->screens->begin(),std::move(display));
+            else context->screens->emplace_back(std::move(display));return TRUE;
+          },reinterpret_cast<LPARAM>(&screenContext));
+    return screens;
+  }
   void BeginCapture() {
     desktop={GetSystemMetrics(SM_XVIRTUALSCREEN),GetSystemMetrics(SM_YVIRTUALSCREEN),0,0};
     int w=GetSystemMetrics(SM_CXVIRTUALSCREEN),h=GetSystemMetrics(SM_CYVIRTUALSCREEN);desktop.right=desktop.left+w;desktop.bottom=desktop.top+h;
     HDC screen=GetDC(nullptr),mem=CreateCompatibleDC(screen);background=CreateCompatibleBitmap(screen,w,h);auto old=SelectObject(mem,background);
     BOOL ok=BitBlt(mem,0,0,w,h,screen,desktop.left,desktop.top,SRCCOPY|CAPTUREBLT);SelectObject(mem,old);DeleteDC(mem);ReleaseDC(nullptr,screen);
     if(!ok) {if(refreshing_selection)RestoreFocusedWindow();refreshing_selection=false;pending->Error("capture","Could not capture desktop");pending.reset();if(background){DeleteObject(background);background=nullptr;}if(was_visible)ShowWindow(owner,SW_SHOW);return;}
+    if(mode=="color") {
+      // Match the macOS fast path: send RGBA directly, without PNG encode/decode.
+      BITMAPINFO info{};info.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);
+      info.bmiHeader.biWidth=w;info.bmiHeader.biHeight=-h;
+      info.bmiHeader.biPlanes=1;info.bmiHeader.biBitCount=32;info.bmiHeader.biCompression=BI_RGB;
+      std::vector<uint8_t> pixels(static_cast<size_t>(w)*h*4);
+      HDC pixelDc=GetDC(nullptr);
+      const int rows=GetDIBits(pixelDc,background,0,h,pixels.data(),&info,DIB_RGB_COLORS);
+      ReleaseDC(nullptr,pixelDc);DeleteObject(background);background=nullptr;
+      if(rows!=h) {pending->Error("capture","无法读取屏幕取色像素");pending.reset();if(was_visible)ShowWindow(owner,SW_SHOW);return;}
+      for(size_t i=0;i<pixels.size();i+=4){std::swap(pixels[i],pixels[i+2]);pixels[i+3]=255;}
+      pending->Success(Value(flutter::EncodableMap{{Value("pixels"),Value(std::move(pixels))},{Value("width"),Value(w)},{Value("height"),Value(h)},{Value("screens"),Value(CaptureScreens())}}));
+      pending.reset();return;
+    }
     selection={0,0,w,h};Finish(true);
   }
 
@@ -364,15 +448,7 @@ class DesktopBridge {
             auto& d=ctx->bridge->desktop;
             ctx->list->emplace_back(flutter::EncodableMap{{Value("x"),Value(static_cast<int32_t>(r.left-d.left))},{Value("y"),Value(static_cast<int32_t>(r.top-d.top))},{Value("width"),Value(static_cast<int32_t>(r.right-r.left))},{Value("height"),Value(static_cast<int32_t>(r.bottom-r.top))}});return TRUE;
           },reinterpret_cast<LPARAM>(&context));
-          flutter::EncodableList screens;
-          struct ScreenContext {RECT desktop; flutter::EncodableList* screens;};ScreenContext screenContext{desktop,&screens};
-          EnumDisplayMonitors(nullptr,nullptr,[](HMONITOR monitor,HDC,LPRECT rectangle,LPARAM data)->BOOL {
-            auto context=reinterpret_cast<ScreenContext*>(data);MONITORINFO info{};info.cbSize=sizeof(info);if(!GetMonitorInfoW(monitor,&info))return TRUE;
-            const auto& r=info.rcMonitor;const auto& d=context->desktop;
-            Value display(flutter::EncodableMap{{Value("x"),Value(static_cast<int32_t>(r.left-d.left))},{Value("y"),Value(static_cast<int32_t>(r.top-d.top))},{Value("width"),Value(static_cast<int32_t>(r.right-r.left))},{Value("height"),Value(static_cast<int32_t>(r.bottom-r.top))}});
-            if(info.dwFlags&MONITORINFOF_PRIMARY)context->screens->insert(context->screens->begin(),std::move(display));
-            else context->screens->emplace_back(std::move(display));return TRUE;
-          },reinterpret_cast<LPARAM>(&screenContext));
+          const auto screens=CaptureScreens();
           frame_ok=true;pending->Success(Value(flutter::EncodableMap{{Value("bytes"),Value(bytes)},{Value("windows"),Value(windows)},{Value("screens"),Value(screens)}}));}
         else pending->Error("capture","Could not read screenshot");
       } else {pending->Error("capture","Could not encode screenshot");if(was_visible)ShowWindow(owner,SW_SHOW);}

@@ -12,11 +12,15 @@ class SmartSelectionBridge extends DesktopBridge {
   final focused = <int>[];
   final presented = <String>[];
   Uint8List? refreshed, copied;
-  bool temporaryTopmost = false, failFocus = false, isolated = false;
+  bool temporaryTopmost = false,
+      failFocus = false,
+      isolated = false,
+      fallback = false;
   int dismissals = 0;
   @override
   Future<Map<Object?, Object?>?> focusCaptureWindow(int index) async {
     focused.add(index);
+    if (fallback) return {'focused': false};
     if (failFocus) throw PlatformException(code: 'window', message: '窗口已关闭');
     temporaryTopmost = index >= 0 && !isolated;
     return refreshed == null ? null : {'bytes': refreshed};
@@ -200,7 +204,7 @@ void main() {
       expect(painter().region, const Rect.fromLTWH(0, 0, 800, 600));
     });
   }
-  for (final outcome in ['copy', 'cancel', 'failure', 'isolated']) {
+  for (final outcome in ['copy', 'cancel', 'failure', 'isolated', 'fallback']) {
     testWidgets(
       'Smart selection refreshes pixels and keeps $outcome recoverable',
       (tester) async {
@@ -210,7 +214,8 @@ void main() {
         addTearDown(tester.view.resetDevicePixelRatio);
         final bridge = SmartSelectionBridge()
           ..failFocus = outcome == 'failure'
-          ..isolated = outcome == 'isolated';
+          ..isolated = outcome == 'isolated'
+          ..fallback = outcome == 'fallback';
         final controller = ClipController(bridge: bridge)..ready = true;
         addTearDown(controller.dispose);
         late Clip clip;
@@ -263,7 +268,9 @@ void main() {
           final pixel = (await painter.image!.toByteData())!;
           expect(
             pixel.getUint8(0),
-            outcome == 'failure' ? 255 : (Colors.blue.toARGB32() >> 16) & 255,
+            ['failure', 'fallback'].contains(outcome)
+                ? 255
+                : (Colors.blue.toARGB32() >> 16) & 255,
           );
         });
         if (outcome == 'copy') {
@@ -280,7 +287,19 @@ void main() {
             expect(find.textContaining('窗口画面获取失败'), findsOneWidget);
             expect(bridge.temporaryTopmost, isFalse);
           } else {
-            expect(bridge.temporaryTopmost, outcome != 'isolated');
+            expect(
+              bridge.temporaryTopmost,
+              !['isolated', 'fallback'].contains(outcome),
+            );
+            if (outcome == 'fallback') {
+              expect(find.textContaining('窗口画面获取失败'), findsNothing);
+              expect(
+                (tester.state(
+                  find.byType(CaptureEditor),
+                ) as dynamic).focusedCaptureWindow,
+                isFalse,
+              );
+            }
           }
           await tester.sendKeyEvent(LogicalKeyboardKey.escape);
           await tester.pumpAndSettle();

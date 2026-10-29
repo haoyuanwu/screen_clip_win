@@ -51,8 +51,13 @@ class PinnedImageWindow {
     pin->target_ = pin->Fit(source);
     pin->current_ = animate ? pin->source_ : pin->target_;
     HWND hwnd = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
-        wc.lpszClassName, L"定格T · 图钉暂存", WS_POPUP, 0, 0, 1, 1, nullptr, nullptr, wc.hInstance, pin);
+        wc.lpszClassName, L"定格T · 图钉暂存", WS_POPUP, pin->current_.left, pin->current_.top, pin->current_.right-pin->current_.left, pin->current_.bottom-pin->current_.top, nullptr, nullptr, wc.hInstance, pin);
     if (!hwnd) { delete pin; return nullptr; }
+    // WM_MOVE during CreateWindowEx updates current_; restore the intended frame
+    // after applying the actual target monitor's DPI, including reduced motion.
+    pin->bar_ = static_cast<LONG>(34.0 * GetDpiForWindow(hwnd)/96.0);
+    pin->target_ = pin->Fit(source);
+    pin->current_ = animate ? pin->source_ : pin->target_;
     pin->Draw(animate ? 230 : 255);
     ShowWindow(hwnd, SW_SHOWNOACTIVATE);
     if (animate) { pin->started_ = GetTickCount64(); SetTimer(hwnd, 1, 16, nullptr); }
@@ -253,6 +258,9 @@ class PinnedImageWindow {
     }
     if(!self) return DefWindowProcW(hwnd,msg,wp,lp);
     switch(msg) {
+      case WM_DPICHANGED:
+        self->bar_=static_cast<LONG>(34.0*HIWORD(wp)/96.0);
+        self->glass_.reset();self->Draw();return 0;
       case WM_TIMER:
         if(wp==1) {
           double t=std::min(1.0,(GetTickCount64()-self->started_)/240.0);

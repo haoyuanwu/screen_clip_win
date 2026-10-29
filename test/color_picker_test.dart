@@ -1,4 +1,5 @@
 import 'dart:ui' as ui;
+import 'dart:io';
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -55,7 +56,71 @@ class RawPickerBridge extends FakeBridge {
   };
 }
 
+class CardSizeBridge extends FakeBridge {
+  CardSizeBridge() : super('unused');
+  final cardSizes = <Size>[];
+  @override
+  Future<void> resizeColorCard(Size size) async {
+    cardSizes.add(size);
+  }
+}
+
 void main() {
+  for (final magnifier in [false, true]) {
+    testWidgets(
+      'Fixed color window contains only the card and reports its natural size (magnifier: $magnifier)',
+      (tester) async {
+        tester.view.physicalSize = const Size(280, 320);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        final bridge = CardSizeBridge();
+        final controller = ClipController(bridge: bridge)
+          ..ready = true
+          ..panel = 'color'
+          ..sampledColor = SampledColor(
+            12,
+            34,
+            56,
+            neighborhood: magnifier
+                ? ColorPixels(Uint8List(17 * 17 * 4), 17, 17)
+                : null,
+          );
+        addTearDown(controller.dispose);
+        await tester.pumpWidget(
+          MaterialApp(
+            home: ListenableBuilder(
+              listenable: controller,
+              builder: (context, _) => Workspace(controller: controller),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        final rect = tester.getRect(find.byType(ColorPreviewCard));
+        expect(rect.topLeft, Offset.zero);
+        expect(rect.width, 280);
+        expect(rect.height, lessThan(320));
+        expect(bridge.cardSizes.last, rect.size);
+        expect(
+          find.byWidgetPredicate(
+            (w) => w is ColoredBox && w.color == Colors.transparent,
+          ),
+          findsWidgets,
+        );
+        tester.view.physicalSize = Size(280, rect.height.ceilToDouble());
+        await tester.pumpAndSettle();
+        expect(
+          tester.getRect(find.byType(ColorPreviewCard)).topLeft,
+          Offset.zero,
+        );
+        expect(tester.takeException(), isNull);
+        await tester.tap(find.byTooltip('关闭取色预览'));
+        await tester.pumpAndSettle();
+        expect(bridge.hidden, isTrue);
+      },
+      skip: !Platform.isWindows,
+    );
+  }
   test(
     'Raw color capture bypasses PNG and retains exact sRGB pixels',
     () async {

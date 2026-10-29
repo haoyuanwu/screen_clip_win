@@ -6,7 +6,7 @@ import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 
 import 'models.dart';
-import 'tencent_tmt.dart';
+import 'argos_engine.dart';
 
 class TranslationTask {
   TranslationTask(this.future, this.cancel);
@@ -17,13 +17,14 @@ class TranslationTask {
 class TranslationService {
   TranslationService({
     http.Client Function()? clientFactory,
+    ArgosEngine? argos,
     this.timeout = const Duration(seconds: 45),
-    DateTime Function()? now,
   }) : _clientFactory = clientFactory ?? http.Client.new,
-       _now = now ?? DateTime.now;
+       argos = argos ?? ArgosEngine();
+  final ArgosEngine argos;
+  void dispose() => argos.dispose();
   final http.Client Function() _clientFactory;
   final Duration timeout;
-  final DateTime Function() _now;
   TranslationTask start({
     required String text,
     required TranslationLanguage from,
@@ -32,6 +33,43 @@ class TranslationService {
     List<String>? segments,
     int maxTokens = 4096,
   }) {
+    if (channel.isLocal) {
+      if (!channel.isEnabled ||
+          !channel.configured ||
+          text.trim().isEmpty ||
+          text.length > 12000 ||
+          to == TranslationLanguage.auto) {
+        return TranslationTask(
+          Future.error(const TranslationException('请先准备并启用本地翻译，输入原文并选择目标语言')),
+          () {},
+        );
+      }
+      final watch = Stopwatch()..start();
+      final operation = argos.run({
+        'command': 'translate',
+        'text': text,
+        'from': from.name,
+        'to': to.name,
+        'segments': ?segments,
+      });
+      return TranslationTask(
+        operation.future.then((data) {
+          final translated = data['text'];
+          if (translated is! String || translated.trim().isEmpty) {
+            throw const TranslationException('本地引擎未返回译文');
+          }
+          return TranslationResult(
+            originalText: text,
+            translatedText: translated,
+            channelName: channel.name,
+            from: from,
+            to: to,
+            duration: watch.elapsed,
+          );
+        }),
+        operation.cancel,
+      );
+    }
     final abort = Completer<void>();
     final client = _clientFactory();
     void cancel() {
@@ -86,18 +124,6 @@ class TranslationService {
     }
     if (to == TranslationLanguage.auto) {
       throw const TranslationException('请选择目标语言');
-    }
-    if (channel.isTencentTmt) {
-      return translateTmt(
-        client: client,
-        abort: abort,
-        text: text,
-        from: from,
-        to: to,
-        channel: channel,
-        now: _now,
-        segments: segments,
-      );
     }
     final invalid = validateTranslationEndpoint(channel.baseUrl);
     if (invalid != null) throw TranslationException(invalid);

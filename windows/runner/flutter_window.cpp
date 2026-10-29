@@ -49,6 +49,24 @@ void FlutterWindow::OnDestroy() {
   Win32Window::OnDestroy();
 }
 
+void FlutterWindow::PrepareKeyboardMessage(MSG& message) {
+  if (!bridge_ || bridge_->text_input_active ||
+      (!bridge_->capture_surface && !bridge_->color_surface) ||
+      GetAncestor(message.hwnd, GA_ROOT) != GetHandle()) return;
+  if (message.message == WM_KEYDOWN && message.wParam == VK_PROCESSKEY) {
+    // IMM only exposes the original key before TranslateMessage. Recover it for
+    // capture shortcuts; text annotations keep the normal IME composition path.
+    const UINT key = ImmGetVirtualKey(message.hwnd);
+    if (key && key != VK_PROCESSKEY) {
+      if (HIMC context = ImmGetContext(message.hwnd)) {
+        ImmNotifyIME(context, NI_COMPOSITIONSTR, CPS_CANCEL, 0);
+        ImmReleaseContext(message.hwnd, context);
+      }
+      message.wParam = key;
+    }
+  }
+}
+
 LRESULT
 FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
@@ -59,6 +77,11 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
   if (message == WM_ENDSESSION) {
     if (wparam) DestroyWindow(hwnd);
     return 0;
+  }
+  if (message == WM_ACTIVATE && LOWORD(wparam) != WA_INACTIVE && bridge_) {
+    // Keep keyboard input in the Flutter view when returning to capture.
+    SetFocus(flutter_controller_->view()->GetNativeWindow());
+    bridge_->UpdateInputMode();
   }
   if (message == WM_DPICHANGED && bridge_ && bridge_->capture_surface) {
     // Update the engine DPI but keep the frozen virtual desktop's physical bounds.

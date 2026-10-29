@@ -10,12 +10,13 @@ import 'package:screen_clip_win/src/qr_scan.dart';
 
 void main() {
   test('Actual ZXing library decodes multiple in-memory QR codes', () {
-    final path =
-        '${Directory.current.path}/build/macos/Build/Products/Debug/PackageFrameworks/flutter-zxing.framework/Versions/A/flutter-zxing';
+    final path = Platform.isWindows
+        ? '${Directory.current.path}/build/windows/x64/runner/Release/flutter_zxing.dll'
+        : '${Directory.current.path}/build/macos/Build/Products/Debug/PackageFrameworks/flutter-zxing.framework/Versions/A/flutter-zxing';
     expect(
       File(path).existsSync(),
       true,
-      reason: 'Run flutter build macos --debug first',
+      reason: 'Build the native application for the current platform first',
     );
     native.dylib = DynamicLibrary.open(path);
     const width = 800, height = 400;
@@ -47,5 +48,5 @@ void main() {
     });
     expect(codes[0].center.dx, closeTo(.1875, .03));
     expect(codes[1].center.dx, closeTo(.6875, .03));
-  }, skip: !Platform.isMacOS);
+  }, skip: !Platform.isMacOS && !Platform.isWindows);
 }

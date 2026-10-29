@@ -1,10 +1,24 @@
 import 'package:flutter/services.dart';
+import 'package:flutter/foundation.dart';
 import 'package:desktop_vision/desktop_vision.dart';
 
 import 'qr_scan.dart';
 import 'ocr_selection.dart';
 
 class DesktopBridge {
+  Future<void> resizeColorCard(Size size) async {
+    if (defaultTargetPlatform != TargetPlatform.windows) return;
+    await channel.invokeMethod<void>('resizeColorCard', {
+      'width': size.width,
+      'height': size.height,
+    });
+  }
+
+  Future<void> setTextInputActive(bool active) async {
+    if (defaultTargetPlatform != TargetPlatform.windows) return;
+    await channel.invokeMethod<void>('setTextInputActive', active);
+  }
+
   Future<void> recognizePinnedText(Object id, Uint8List bytes) async {
     Map<String, Object?> payload;
     try {

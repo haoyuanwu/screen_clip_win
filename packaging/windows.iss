@@ -1,4 +1,6 @@
-﻿#define AppVersion "1.1.1"
+﻿#ifndef AppVersion
+#define AppVersion "1.1.2"
+#endif
 [Setup]
 #ifdef InstallerTest
 AppId=ScreenClip-InstallerVerification

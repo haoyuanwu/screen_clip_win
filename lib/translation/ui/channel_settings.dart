@@ -4,9 +4,9 @@ import 'package:flutter/material.dart';
 import '../../src/ui/controls.dart';
 import '../../src/ui/capture_mirrors.dart' show scheduleCaptureFrame;
 import '../service.dart';
-import '../tencent_tmt.dart';
 import '../controller.dart';
 import '../models.dart';
+import 'argos_settings.dart';
 
 class ChannelSettings extends StatefulWidget {
   const ChannelSettings({
@@ -29,6 +29,15 @@ class _ChannelSettingsState extends State<ChannelSettings> {
   @override
   Widget build(BuildContext context) {
     final c = widget.controller, colors = Theme.of(context).colorScheme;
+    if (editing?.isLocal == true) {
+      return ArgosSettings(
+        key: const ValueKey('argos-settings'),
+        controller: c,
+        channel: editing!,
+        onBack: () => setState(() => editing = null),
+        onSaved: widget.onConfigured,
+      );
+    }
     if (adding || editing != null) {
       return ChannelEditor(
         key: ValueKey(editing?.id ?? 'new'),
@@ -47,7 +56,7 @@ class _ChannelSettingsState extends State<ChannelSettings> {
         Text('翻译渠道', style: Theme.of(context).textTheme.titleMedium),
         const SizedBox(height: 6),
         Text(
-          'API Key 保存在系统安全存储中。配置模型与接口后，原文将直接发送至所选服务商。',
+          '本地翻译无需 Key，文字留在本机。在线渠道的 Key 保存在系统安全存储中，原文直接发送至所选服务商。',
           style: TextStyle(
             color: colors.onSurfaceVariant,
             fontSize: 12,
@@ -127,8 +136,8 @@ class _ChannelSettingsState extends State<ChannelSettings> {
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      channel.isTencentTmt
-                          ? '文本翻译 · ${channel.region}'
+                      channel.isLocal
+                          ? '中英互译 · Windows / macOS · 离线'
                           : channel.model,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
@@ -180,9 +189,7 @@ class _ChannelSettingsState extends State<ChannelSettings> {
                                 }
                               }
                             },
-                            child: Text(
-                              channel.isTencentTmt ? '获取云密钥 ↗' : '获取 Key ↗',
-                            ),
+                            child: Text('获取 Key ↗'),
                           ),
                         if (channel.apiKey.isNotEmpty || channel.isCustom)
                           TextButton(
@@ -197,12 +204,7 @@ class _ChannelSettingsState extends State<ChannelSettings> {
                                       await c.removeChannel(channel.id);
                                     } else {
                                       await c.saveChannel(
-                                        channel.copyWith(
-                                          apiKey: '',
-                                          secretId: channel.isTencentTmt
-                                              ? ''
-                                              : null,
-                                        ),
+                                        channel.copyWith(apiKey: ''),
                                       );
                                     }
                                     if (mounted) setState(() => confirm = null);
@@ -273,14 +275,6 @@ class _ChannelEditorState extends State<ChannelEditor> {
   );
   late final model = TextEditingController(text: widget.channel?.model ?? '');
   final keyInput = TextEditingController();
-  final secretIdInput = TextEditingController();
-  late final regionInput = TextEditingController(
-    text: widget.channel?.region ?? 'ap-guangzhou',
-  );
-  late final projectInput = TextEditingController(
-    text: '${widget.channel?.projectId ?? 0}',
-  );
-  bool get tmt => widget.channel?.isTencentTmt == true;
   String? error, validationStatus;
   bool validating = false, validationPassed = false;
   int validationEpoch = 0;
@@ -307,7 +301,7 @@ class _ChannelEditorState extends State<ChannelEditor> {
     setState(() {
       validating = true;
       validationPassed = false;
-      validationStatus = tmt ? '正在验证云密钥与 TMT 服务…' : '正在验证 Key 与模型…';
+      validationStatus = '正在验证 Key 与模型…';
       error = null;
     });
     scheduleCaptureFrame();
@@ -327,11 +321,6 @@ class _ChannelEditorState extends State<ChannelEditor> {
                 apiKey: keyInput.text.trim().isEmpty
                     ? widget.channel?.apiKey ?? ''
                     : keyInput.text.trim(),
-                secretId: secretIdInput.text.trim().isEmpty
-                    ? widget.channel?.secretId ?? ''
-                    : secretIdInput.text.trim(),
-                region: regionInput.text.trim(),
-                projectId: int.tryParse(projectInput.text.trim()) ?? 0,
                 isEnabled: true,
               );
       final task = validationTask = widget.controller.service.start(
@@ -345,7 +334,7 @@ class _ChannelEditorState extends State<ChannelEditor> {
       if (mounted && epoch == validationEpoch) {
         setState(() {
           validationPassed = true;
-          validationStatus = tmt ? '验证通过，云密钥与 TMT 服务可用' : '验证通过，当前 Key 与模型可用';
+          validationStatus = '验证通过，当前 Key 与模型可用';
         });
       }
     } on TranslationCancelled {
@@ -379,9 +368,6 @@ class _ChannelEditorState extends State<ChannelEditor> {
     endpoint.dispose();
     model.dispose();
     keyInput.dispose();
-    secretIdInput.dispose();
-    regionInput.dispose();
-    projectInput.dispose();
     super.dispose();
   }
 
@@ -402,11 +388,6 @@ class _ChannelEditorState extends State<ChannelEditor> {
         name: name.text.trim(),
         baseUrl: endpoint.text.trim(),
         model: model.text.trim(),
-        secretId: secretIdInput.text.trim().isEmpty
-            ? original.secretId
-            : secretIdInput.text.trim(),
-        region: regionInput.text.trim(),
-        projectId: int.tryParse(projectInput.text.trim()) ?? 0,
         apiKey: keyInput.text.trim().isEmpty
             ? original.apiKey
             : keyInput.text.trim(),
@@ -457,79 +438,19 @@ class _ChannelEditorState extends State<ChannelEditor> {
             autocorrect: false,
             decoration: InputDecoration(
               labelText: 'API 地址',
-              hintText: tmt
-                  ? 'https://tmt.tencentcloudapi.com'
-                  : 'https://example.com/v1/chat/completions',
-              helperText: tmt
-                  ? 'TMT 使用腾讯云 API 3.0，不需要 Chat Completions 路径'
-                  : '填写完整 Chat Completions 地址；本机服务可用 HTTP',
+              hintText: 'https://example.com/v1/chat/completions',
+              helperText: '填写完整 Chat Completions 地址；本机服务可用 HTTP',
             ),
-            validator: (v) => tmt
-                ? validateTmtEndpoint(v ?? '')
-                : validateTranslationEndpoint(v ?? ''),
+            validator: (v) => validateTranslationEndpoint(v ?? ''),
           ),
           const SizedBox(height: 14),
-          if (tmt) ...[
-            Text(
-              '腾讯云 TMT 使用 SecretId / SecretKey。文本翻译计划于 2030-12-31 停止服务，后续可迁移至 TokenHub。',
-              style: TextStyle(
-                fontSize: 12,
-                height: 1.6,
-                color: colors.onSurfaceVariant,
-              ),
-            ),
-            const SizedBox(height: 14),
-            TextFormField(
-              controller: secretIdInput,
-              obscureText: true,
-              autocorrect: false,
-              enableSuggestions: false,
-              decoration: InputDecoration(
-                labelText: 'SecretId',
-                helperText: widget.channel?.secretId.isNotEmpty == true
-                    ? '已安全保存，留空保留；输入新 ID 可替换'
-                    : '在腾讯云 API 密钥管理中获取',
-              ),
-              validator: (v) =>
-                  (v ?? '').trim().isEmpty &&
-                      widget.channel?.secretId.isNotEmpty != true
-                  ? '请输入 SecretId'
-                  : null,
-            ),
-            const SizedBox(height: 14),
-            TextFormField(
-              controller: regionInput,
-              autocorrect: false,
-              decoration: const InputDecoration(
-                labelText: '地域 Region',
-                helperText: '默认 ap-guangzhou（广州）',
-              ),
-              validator: (v) =>
-                  RegExp(r'^[a-z][a-z0-9]*(?:-[a-z0-9]+)+$')
-                      .hasMatch((v ?? '').trim())
-                  ? null
-                  : '请输入有效地域，例如 ap-guangzhou',
-            ),
-            const SizedBox(height: 14),
-            TextFormField(
-              controller: projectInput,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(
-                labelText: '项目 ID',
-                helperText: '默认项目填 0',
-              ),
-              validator: (v) => (int.tryParse((v ?? '').trim()) ?? -1) < 0
-                  ? '请输入非负整数项目 ID'
-                  : null,
-            ),
-          ] else
-            TextFormField(
-              controller: model,
-              autocorrect: false,
-              decoration: const InputDecoration(labelText: '模型名称 / 接入点 ID'),
-              validator: (v) =>
-                  v == null || v.trim().isEmpty ? '请填写已开通的模型名称' : null,
-            ),
+          TextFormField(
+            controller: model,
+            autocorrect: false,
+            decoration: const InputDecoration(labelText: '模型名称 / 接入点 ID'),
+            validator: (v) =>
+                v == null || v.trim().isEmpty ? '请填写已开通的模型名称' : null,
+          ),
           const SizedBox(height: 14),
           TextFormField(
             controller: keyInput,
@@ -537,16 +458,14 @@ class _ChannelEditorState extends State<ChannelEditor> {
             autocorrect: false,
             enableSuggestions: false,
             decoration: InputDecoration(
-              labelText: tmt ? 'SecretKey' : 'API Key',
+              labelText: 'API Key',
               helperText: widget.channel?.apiKey.isNotEmpty == true
                   ? '${widget.channel!.keyHint}，留空保留；输入新 Key 可替换'
                   : '仅保存在系统钥匙串 / Windows 安全存储',
             ),
             validator: (v) =>
                 (v ?? '').trim().isEmpty && widget.channel?.configured != true
-                ? tmt
-                      ? '请输入 SecretKey'
-                      : '请输入 API Key'
+                ? '请输入 API Key'
                 : null,
           ),
           const SizedBox(height: 12),
@@ -568,13 +487,7 @@ class _ChannelEditorState extends State<ChannelEditor> {
                             : CupertinoIcons.checkmark_shield,
                         size: 17,
                       ),
-                label: Text(
-                  validating
-                      ? '验证中…'
-                      : tmt
-                      ? '验证云密钥'
-                      : '验证 API Key',
-                ),
+                label: Text(validating ? '验证中…' : '验证 API Key'),
               ),
               if (validating)
                 TextButton(
@@ -588,9 +501,7 @@ class _ChannelEditorState extends State<ChannelEditor> {
           ),
           const SizedBox(height: 6),
           Text(
-            tmt
-                ? '发送 Hello 文本验证密钥、地域及服务权限，不发送截图内容。'
-                : '发送简短测试验证当前 Key、地址和模型，不发送截图内容。',
+            '发送简短测试验证当前 Key、地址和模型，不发送截图内容。',
             style: TextStyle(
               fontSize: 11,
               height: 1.5,

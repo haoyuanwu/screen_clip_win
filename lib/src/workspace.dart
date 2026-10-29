@@ -41,7 +41,7 @@ class Workspace extends StatelessWidget {
         child: Focus(
           autofocus: true,
           child: ColoredBox(
-            color: c.panel == 'color' && Platform.isMacOS
+            color: c.panel == 'color'
                 ? Colors.transparent
                 : Theme.of(context).scaffoldBackgroundColor,
             child: SafeArea(
@@ -94,17 +94,28 @@ class Workspace extends StatelessWidget {
                               controller: c,
                             )
                           : c.panel == 'color' && c.sampledColor != null
-                          ? Padding(
-                              padding: const EdgeInsets.all(10),
-                              child: Center(
-                                child: ColorPreviewCard(
-                                  sample: c.sampledColor!,
-                                  fixed: true,
-                                  onClose: c.discard,
-                                  onResample: () => c.capture('color'),
-                                ),
-                              ),
-                            )
+                          ? Platform.isWindows
+                                ? FixedColorPreview(
+                                    sample: c.sampledColor!,
+                                    onClose: c.discard,
+                                    onResample: () => c.capture('color'),
+                                    onSizeChanged: (size) {
+                                      c.bridge
+                                          .resizeColorCard(size)
+                                          .catchError((Object _) {});
+                                    },
+                                  )
+                                : Padding(
+                                    padding: const EdgeInsets.all(10),
+                                    child: Center(
+                                      child: ColorPreviewCard(
+                                        sample: c.sampledColor!,
+                                        fixed: true,
+                                        onClose: c.discard,
+                                        onResample: () => c.capture('color'),
+                                      ),
+                                    ),
+                                  )
                           : c.panel == 'translation'
                           ? TranslationPanel(
                               controller: c.translation,

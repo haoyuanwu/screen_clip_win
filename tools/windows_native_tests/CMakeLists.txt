@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.14)
+project(screenclip_windows_native_tests LANGUAGES CXX)
+add_executable(screenclip_windows_native_tests main.cpp ../../packages/desktop_vision/windows/ocr_service.cpp)
+target_compile_features(screenclip_windows_native_tests PRIVATE cxx_std_20)
+target_compile_options(screenclip_windows_native_tests PRIVATE /utf-8 /W4)
+target_compile_definitions(screenclip_windows_native_tests PRIVATE NOMINMAX UNICODE _UNICODE)
+target_include_directories(screenclip_windows_native_tests PRIVATE ../../windows/flutter/ephemeral/cpp_client_wrapper/include ../../packages/desktop_vision/windows ../../windows/runner)
+target_link_libraries(screenclip_windows_native_tests PRIVATE windowsapp ole32 user32 gdi32 gdiplus)

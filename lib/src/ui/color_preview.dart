@@ -9,6 +9,68 @@ import 'controls.dart';
 
 final liveColorPreviewKey = GlobalKey(debugLabel: 'liveColorPreview');
 
+/// A standalone color popup whose native window follows the card's content.
+class FixedColorPreview extends StatefulWidget {
+  const FixedColorPreview({
+    super.key,
+    required this.sample,
+    required this.onSizeChanged,
+    this.onClose,
+    this.onResample,
+  });
+  final SampledColor sample;
+  final ValueChanged<Size> onSizeChanged;
+  final VoidCallback? onClose, onResample;
+  @override
+  State<FixedColorPreview> createState() => _FixedColorPreviewState();
+}
+
+class _FixedColorPreviewState extends State<FixedColorPreview> {
+  final cardKey = GlobalKey();
+  Size? lastSize;
+  bool measuring = false;
+  @override
+  void initState() {
+    super.initState();
+    measure();
+  }
+
+  void measure() {
+    if (measuring) return;
+    measuring = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      measuring = false;
+      if (!mounted) return;
+      final size = cardKey.currentContext?.size;
+      if (size == null || size.isEmpty || size == lastSize) return;
+      lastSize = size;
+      widget.onSizeChanged(size);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) => Align(
+    alignment: Alignment.topCenter,
+    child: NotificationListener<SizeChangedLayoutNotification>(
+      onNotification: (_) {
+        measure();
+        return false;
+      },
+      child: SingleChildScrollView(
+        child: SizeChangedLayoutNotifier(
+          child: ColorPreviewCard(
+            key: cardKey,
+            sample: widget.sample,
+            fixed: true,
+            onClose: widget.onClose,
+            onResample: widget.onResample,
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
 class ColorPreviewCard extends StatefulWidget {
   const ColorPreviewCard({
     super.key,

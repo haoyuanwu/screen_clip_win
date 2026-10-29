@@ -46,7 +46,17 @@
 
 macOS v1.1.2 分别提供 Apple Silicon（arm64）和 Intel（x64）DMG，要求 macOS 14.0 及以上。打开后将“定格T.app”拖入 Applications，退出旧版本后再启动。此包使用本地临时签名，尚未经过 Apple Developer ID 签名与公证。首次截图或取色需要屏幕录制权限。
 
-Windows 安装版和便携版仍使用 v1.1.1；本次 macOS 更新没有生成新的 Windows 二进制包。
+GitHub 上的 Windows 安装版和便携版目前仍为 v1.1.1。本地 Windows 已同步 v1.1.2 的 OCR、二维码、取色、图钉文字选择和编辑交互，并完成原生验证；预览包尚未上传发布。同步范围与验证记录见 [Windows 功能同步](docs/windows-sync.md)。
+
+生成本地 Windows 预览包：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/package_windows.ps1
+# 已有当前版本 Release 构建时：
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/package_windows.ps1 -SkipBuild
+```
+
+脚本核对版本，打包 OCR／二维码插件与 Visual C++ 运行库，输出到 dist；不会上传或发布。
 
 ## 常用快捷键
 
@@ -85,3 +95,5 @@ Windows 安装脚本为 `packaging/windows.iss`，使用 Inno Setup 编译。分
 在 Mac 上可执行 `flutter run -d macos` 或 `flutter build macos --release`。已在 Apple Silicon 双屏环境检查截图、取色与启动流程；Intel 运行需要另行真机验证。
 
 详细说明：[产品设计](docs/product-design.md)、[设计系统](design-system/screenclip/MASTER.md)、[发布说明](docs/releases/1.0.0.md)。
+
+本地中英翻译的准备、构建和双平台验收见 [Argos 本地翻译](docs/argos-local-translation.md)。
