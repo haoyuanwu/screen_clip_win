@@ -1,6 +1,16 @@
-# Windows 同步 macOS v1.1.2
+# Windows 同步 macOS v1.1.3
 
-本地源码与预览包已对齐 macOS 的共享编辑功能；尚未推送或发布 Windows v1.1.2。
+当前源码基于远端 `2c5d153`（macOS v1.1.3）。本次对齐保持 1.1.3 版本号，Windows 安装包补充至现有 GitHub Release。
+
+## 1.1.3 对齐
+
+- 共享代码同步后台语言包下载、进度／取消／重试、关闭翻译面板不中断下载、语言交换自动重译。
+- 同步 OCR 段落合并、只读图上译文、原文背景采样恢复、字号颜色参考、译文扩展与避让、对照阅读。
+- Windows `flutter run` / `flutter build windows` 自动嵌入本地引擎及 HTTPS 根证书，与 macOS 构建行为一致。按源码输入时间缓存辅助进程，首次需要 Python 与联网安装固定依赖；最终用户不需 Python。
+- Windows 安装脚本默认版本与源码统一为 1.1.3；打包脚本复用同一缓存嵌入流程。
+- 静态检查、144 项 Flutter 测试（另有 2 项原有平台跳过）、Windows Release 构建，以及最新打包引擎真实中英互译、OCR 分段和取消验收通过。
+- 保留平台合理差异：Windows 原生截图／输入法／系统 OCR，macOS 使用自身截图与沙盒签名机制。不将 macOS 原生接口直接移植到 Windows。
+
 
 ## 同步范围
 

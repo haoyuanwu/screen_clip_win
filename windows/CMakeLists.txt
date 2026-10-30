@@ -106,3 +106,13 @@ install(DIRECTORY "${PROJECT_BUILD_DIR}/${FLUTTER_ASSET_DIR_NAME}"
 install(FILES "${AOT_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"
   CONFIGURATIONS Profile;Release
   COMPONENT Runtime)
+
+# Match macOS: flutter run/build includes the local engine, not only installers.
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_custom_target(screenclip_argos ALL
+  COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../tools/argos/embed_windows.py"
+    --destination "${CMAKE_CURRENT_BINARY_DIR}/runner/$<CONFIG>/argos"
+  COMMENT "Embedding Argos local translation engine"
+  VERBATIM)
+add_dependencies(${BINARY_NAME} screenclip_argos)

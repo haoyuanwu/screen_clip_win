@@ -20,7 +20,7 @@ try {
  foreach ($name in @('screen_clip_win.exe','flutter_windows.dll','desktop_vision_plugin.dll','flutter_zxing.dll','file_selector_windows_plugin.dll','data\app.so')) {
    if (-not (Test-Path -LiteralPath (Join-Path $release $name))) { throw "Missing release dependency: $name" }
  }
- & python (Join-Path $PSScriptRoot 'argos\build.py') --destination (Join-Path $release 'argos')
+ & python (Join-Path $PSScriptRoot 'argos\embed_windows.py') --destination (Join-Path $release 'argos')
  if ($LASTEXITCODE -ne 0) { throw 'Argos helper build failed.' }
  $builtVersion = (Get-Item -LiteralPath (Join-Path $release 'screen_clip_win.exe')).VersionInfo.FileVersion.Split('+')[0]
  if ($builtVersion -ne $version) { throw "Stale build: expected $version, found $builtVersion" }
