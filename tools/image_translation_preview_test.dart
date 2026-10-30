@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:screen_clip_win/src/editor.dart';
+import 'package:screen_clip_win/translation/source_appearance.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -48,12 +49,37 @@ void main() {
       final picture = recorder.endRecording();
       final image = await picture.toImage(600, 240);
       picture.dispose();
-      final marks = [
-        imageTranslationMark('定格瞬间，保留原意。', boxes[0]),
-        imageTranslationMark('选择图片中的文字并翻译。', boxes[1]),
-      ];
+      final pixels = (await image.toByteData(
+        format: ui.ImageByteFormat.rawRgba,
+      ))!;
+      final texts = ['定格瞬间，保留原意。', '选择图片中的文字并翻译。'];
+      final marks = layoutTranslationMarks(
+        [
+          for (var i = 0; i < boxes.length; i++)
+            imageTranslationMark(texts[i], boxes[i]).copyText(
+              size: 24,
+              ink: sourceAppearance(pixels, 600, 240, boxes[i]).ink,
+              sourceRestoration: [
+                (
+                  boxes[i],
+                  sourceAppearance(pixels, 600, 240, boxes[i]).background,
+                ),
+              ],
+            ),
+        ],
+        const Rect.fromLTWH(0, 0, 600, 240),
+        mimicSource: true,
+      );
       final output = Directory('build/translation-previews')
         ..createSync(recursive: true);
+      expect(marks.every((m) => m.background.a == 0), true);
+      expect(marks.every((m) => m.fontSize == 24), true);
+      expect(
+        marks.every(
+          (m) => m.sourceRestoration.single.$2 == const Color(0xff20242d),
+        ),
+        true,
+      );
       await File('${output.path}/image-original.png')
           .writeAsBytes(await renderCapture(image, [], null));
       await File('${output.path}/image-translated.png')

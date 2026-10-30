@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -60,9 +61,106 @@ class ProvisionArgos extends ArgosEngine {
   }
 }
 
+class BackgroundArgos extends ProvisionArgos {
+  Completer<Map<String, dynamic>>? installation;
+  void Function(String, double?)? report;
+  int installs = 0;
+  bool downloadCancelled = false;
+  @override
+  ArgosOperation run(
+    Map<String, Object?> request, {
+    void Function(String, double?)? onProgress,
+    Duration timeout = const Duration(minutes: 3),
+  }) {
+    if (request['command'] != 'install') return super.run(request);
+    installs++;
+    report = onProgress;
+    final pending = installation = Completer<Map<String, dynamic>>();
+    return ArgosOperation(pending.future, () {
+      downloadCancelled = true;
+      if (!pending.isCompleted) {
+        pending.completeError(const TranslationCancelled());
+      }
+    });
+  }
+}
+
 void main() {
   testWidgets(
-    'Missing models prompt download and saving resumes the original translation',
+    'Download survives settings dismissal, shares progress and enables local translation',
+    (tester) async {
+      final engine = BackgroundArgos();
+      final c = TranslationController(
+        storage: MemoryChannels(),
+        service: TranslationService(argos: engine),
+      );
+      addTearDown(c.dispose);
+      await c.initialize();
+      Widget settings() => MaterialApp(
+        home: Scaffold(
+          body: ArgosSettings(
+            controller: c,
+            channel: c.activeChannel!,
+            onBack: () {},
+          ),
+        ),
+      );
+      await tester.pumpWidget(settings());
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('下载中英语言包'));
+      await tester.pump();
+      await tester.pumpWidget(const MaterialApp(home: SizedBox()));
+      await c.downloadLocalModels();
+      expect(engine.installs, 1);
+      expect(engine.downloadCancelled, false);
+      expect(c.downloadingLocalModels, true);
+      engine.report!('正在下载英译中语言包', .25);
+      await tester.pumpWidget(settings());
+      await tester.pump();
+      expect(find.text('正在下载英译中语言包'), findsOneWidget);
+      expect(
+        tester
+            .widget<LinearProgressIndicator>(
+              find.byType(LinearProgressIndicator),
+            )
+            .value,
+        .25,
+      );
+      engine.ready = true;
+      engine.installation!.complete({'ready': true});
+      await tester.pumpAndSettle();
+      expect(c.activeChannel!.configured, true);
+      expect(c.downloadingLocalModels, false);
+      c.setSource('Hello');
+      await c.translate();
+      expect(c.result?.translatedText, '你好');
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  test('Failed background downloads can retry and cancellation leaves models unconfigured', () async {
+    final engine = BackgroundArgos();
+    final c = TranslationController(
+      storage: MemoryChannels(),
+      service: TranslationService(argos: engine),
+    );
+    addTearDown(c.dispose);
+    await c.initialize();
+    final failed = c.downloadLocalModels();
+    engine.installation!.completeError(const TranslationException('网络不可用'));
+    await failed;
+    expect(c.localModelStatus, '网络不可用');
+    expect(c.downloadingLocalModels, false);
+    expect(c.activeChannel!.configured, false);
+    final retry = c.downloadLocalModels();
+    c.cancelModelDownload();
+    await retry;
+    expect(engine.installs, 2);
+    expect(c.localModelStatus, contains('取消'));
+    expect(c.activeChannel!.configured, false);
+  });
+  testWidgets(
+    'Missing models prompt download and completion enables translation without saving',
     (tester) async {
       final engine = ProvisionArgos();
       final c = TranslationController(
@@ -90,7 +188,8 @@ void main() {
       expect(c.sourceText, 'Hello');
       await tester.tap(find.text('下载中英语言包'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('保存并返回'));
+      expect(find.text('保存并返回'), findsNothing);
+      await tester.tap(find.widgetWithText(FilledButton, '翻译'));
       await tester.pumpAndSettle();
       expect(c.needsLocalModels, false);
       expect(c.result?.translatedText, '你好');
@@ -102,7 +201,7 @@ void main() {
   test('Default local translation requests a download without losing original text', () async {
     final c = TranslationController(
       storage: MemoryChannels(),
-      service: TranslationService(argos: ReadyArgos()),
+      service: TranslationService(argos: ProvisionArgos()),
     );
     addTearDown(c.dispose);
     await c.initialize();

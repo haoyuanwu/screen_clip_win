@@ -53,6 +53,7 @@ class _ChannelSettingsState extends State<ChannelSettings> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
+        LocalModelDownloadStatus(controller: c),
         Text('翻译渠道', style: Theme.of(context).textTheme.titleMedium),
         const SizedBox(height: 6),
         Text(

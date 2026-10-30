@@ -2,7 +2,7 @@
 
 一款轻巧的常驻截图工具。没有主页，也不保存截图历史；框选、标注、复制，在同一个截图界面里完成。
 
-[下载 macOS Apple Silicon](https://github.com/haoyuanwu/screen_clip_win/releases/download/v1.1.2/ScreenClip-1.1.2-macOS-arm64.dmg) · [下载 macOS Intel](https://github.com/haoyuanwu/screen_clip_win/releases/download/v1.1.2/ScreenClip-1.1.2-macOS-x64.dmg) · [下载 Windows 安装版](https://github.com/haoyuanwu/screen_clip_win/releases/download/v1.1.1/ScreenClip-1.1.1-Windows-x64-Setup.exe) · [下载便携版](https://github.com/haoyuanwu/screen_clip_win/releases/download/v1.1.1/ScreenClip-1.1.1-Windows-x64-Portable.zip) · [查看发布版本](https://github.com/haoyuanwu/screen_clip_win/releases)
+[下载 macOS Apple Silicon](https://github.com/haoyuanwu/screen_clip_win/releases/download/v1.1.3/ScreenClip-1.1.3-macOS-arm64.dmg) · [下载 macOS Intel](https://github.com/haoyuanwu/screen_clip_win/releases/download/v1.1.3/ScreenClip-1.1.3-macOS-x64.dmg) · [下载 Windows 安装版](https://github.com/haoyuanwu/screen_clip_win/releases/download/v1.1.1/ScreenClip-1.1.1-Windows-x64-Setup.exe) · [下载便携版](https://github.com/haoyuanwu/screen_clip_win/releases/download/v1.1.1/ScreenClip-1.1.1-Windows-x64-Portable.zip) · [查看发布版本](https://github.com/haoyuanwu/screen_clip_win/releases)
 
 ## 截图，只需几步
 
@@ -44,7 +44,7 @@
 
 首次运行默认启用开机启动。看不到主窗口是正常现象，可从系统托盘或全局快捷键进入。升级前，请先从托盘退出旧版本。
 
-macOS v1.1.2 分别提供 Apple Silicon（arm64）和 Intel（x64）DMG，要求 macOS 14.0 及以上。打开后将“定格T.app”拖入 Applications，退出旧版本后再启动。此包使用本地临时签名，尚未经过 Apple Developer ID 签名与公证。首次截图或取色需要屏幕录制权限。
+macOS v1.1.3 分别提供 Apple Silicon（arm64）和 Intel（x64）DMG，要求 macOS 14.0 及以上。打开后将“定格T.app”拖入 Applications，退出旧版本后再启动。此包使用本地临时签名，尚未经过 Apple Developer ID 签名与公证。首次截图或取色需要屏幕录制权限。
 
 GitHub 上的 Windows 安装版和便携版目前仍为 v1.1.1。本地 Windows 已同步 v1.1.2 的 OCR、二维码、取色、图钉文字选择和编辑交互，并完成原生验证；预览包尚未上传发布。同步范围与验证记录见 [Windows 功能同步](docs/windows-sync.md)。
 

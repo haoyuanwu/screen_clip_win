@@ -158,6 +158,10 @@ class _TranslationPanelState extends State<TranslationPanel> {
                     c.changed();
                   }
                 },
+                onDownloadStarted: () {
+                  c.needsLocalModels = false;
+                  c.changed();
+                },
                 onSaved: () {
                   c.needsLocalModels = false;
                   if (widget.onConfigured != null) {
@@ -283,7 +287,19 @@ class _TranslationPanelState extends State<TranslationPanel> {
                                               c.extracting ||
                                               c.saving
                                           ? null
-                                          : () => c.languages(c.to, c.from),
+                                          : () async {
+                                              final success = await c.languages(
+                                                c.to,
+                                                c.from,
+                                              );
+                                              if (mounted &&
+                                                  success &&
+                                                  c.sourceText
+                                                      .trim()
+                                                      .isNotEmpty) {
+                                                c.translate();
+                                              }
+                                            },
                                     ),
                                     selectButton('to', c.to.label),
                                     selectButton(
@@ -338,18 +354,24 @@ class _TranslationPanelState extends State<TranslationPanel> {
                                                       ))
                                                 TextButton(
                                                   onPressed: () async {
-                                                    await c.languages(
-                                                      chooser == 'from'
-                                                          ? language
-                                                          : c.from,
-                                                      chooser == 'to'
-                                                          ? language
-                                                          : c.to,
-                                                    );
-                                                    if (mounted) {
+                                                    final success = await c
+                                                        .languages(
+                                                          chooser == 'from'
+                                                              ? language
+                                                              : c.from,
+                                                          chooser == 'to'
+                                                              ? language
+                                                              : c.to,
+                                                        );
+                                                    if (mounted && success) {
                                                       setState(
                                                         () => chooser = null,
                                                       );
+                                                      if (c.sourceText
+                                                          .trim()
+                                                          .isNotEmpty) {
+                                                        c.translate();
+                                                      }
                                                     }
                                                   },
                                                   child: Text(language.label),
@@ -359,6 +381,7 @@ class _TranslationPanelState extends State<TranslationPanel> {
                                       ),
                                     ),
                                   ),
+                                LocalModelDownloadStatus(controller: c),
                                 if (!ready || c.configError != null)
                                   Padding(
                                     padding: const EdgeInsets.symmetric(

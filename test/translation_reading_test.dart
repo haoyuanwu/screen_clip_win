@@ -15,7 +15,8 @@ import 'package:screen_clip_win/src/ui/controls.dart';
 import 'package:screen_clip_win/translation/service.dart';
 import 'package:screen_clip_win/translation/ui/reading_panel.dart';
 
-import 'translation_test.dart' show configured, TranslateOcrBridge;
+import 'translation_test.dart'
+    show configured, TranslateOcrBridge, settleTranslation;
 import 'widget_test.dart' show sample;
 
 class ReadingOcrBridge extends TranslateOcrBridge {
@@ -133,9 +134,9 @@ void main() {
             ),
           ),
         );
-        await tester.pumpAndSettle();
+        await settleTranslation(tester);
         update(() => active = 18);
-        await tester.pumpAndSettle();
+        await settleTranslation(tester);
         final highlighted = tester.widget<AnimatedContainer>(
           find.byKey(const ValueKey('translation-passage-18')),
         );
@@ -156,7 +157,7 @@ void main() {
           greaterThan(0),
         );
         await tester.tap(find.byTooltip('下一段译文'));
-        await tester.pumpAndSettle();
+        await settleTranslation(tester);
         expect(active, 19);
         expect(tester.takeException(), isNull);
       },
@@ -216,24 +217,21 @@ void main() {
       await tester.runAsync(
         () => Future<void>.delayed(const Duration(milliseconds: 100)),
       );
-      await tester.pumpAndSettle();
+      await settleTranslation(tester);
       await tester.tap(find.byTooltip('翻译选区文字'));
-      await tester.pumpAndSettle();
-      expect(find.byTooltip('翻译语言'), findsNothing);
-      expect(find.byTooltip('切换翻译目标语言'), findsOneWidget);
-      await tester.tap(find.byTooltip('按当前语言翻译'));
+      await tester.pump();
       await tester.runAsync(
         () => Future<void>.delayed(const Duration(milliseconds: 100)),
       );
-      await tester.pumpAndSettle();
+      await settleTranslation(tester);
       await tester.tap(find.byTooltip('对照阅读'));
-      await tester.pumpAndSettle();
+      await settleTranslation(tester);
       final mouse = await tester.createGesture(
         kind: ui.PointerDeviceKind.mouse,
       );
       await mouse.addPointer(location: const Offset(120, 120));
       await mouse.moveTo(const Offset(200, 450));
-      await tester.pumpAndSettle();
+      await settleTranslation(tester);
       expect(
         tester
             .widget<TranslationReadingPanel>(
@@ -250,7 +248,7 @@ void main() {
       expect(source.activeId, 1);
       expect(source.passages[1].source, 'Second paragraph');
       await mouse.moveTo(const Offset(200, 130));
-      await tester.pumpAndSettle();
+      await settleTranslation(tester);
       expect(
         tester
             .widget<TranslationReadingPanel>(
@@ -266,12 +264,12 @@ void main() {
         find.byKey(const ValueKey('translation-reading-drag-handle')),
         const Offset(-120, 90),
       );
-      await tester.pumpAndSettle();
+      await settleTranslation(tester);
       final movedPanel = tester.getRect(panelFinder);
       expect(movedPanel.left, closeTo(originalPanel.left - 120, 1));
       expect(movedPanel.top, closeTo(originalPanel.top + 90, 1));
       await mouse.moveTo(const Offset(200, 450));
-      await tester.pumpAndSettle();
+      await settleTranslation(tester);
       expect(
         tester.getRect(panelFinder),
         movedPanel,
@@ -282,7 +280,7 @@ void main() {
         find.byKey(const ValueKey('translation-reading-drag-handle')),
         const Offset(0, 500),
       );
-      await tester.pumpAndSettle();
+      await settleTranslation(tester);
       final popup = tester.getRect(panelFinder);
       final toolbar = tester.getRect(find.byType(GlassPanel).last);
       final overlap = popup.intersect(toolbar);
@@ -295,20 +293,20 @@ void main() {
         reason: 'The popup paints and receives input above the editing toolbar',
       );
       tester.view.physicalSize = const Size(900, 650);
-      await tester.pumpAndSettle();
+      await settleTranslation(tester);
       final resizedPanel = tester.getRect(panelFinder);
       await tester.drag(
         find.byKey(const ValueKey('translation-reading-drag-handle')),
         const Offset(-20, -20),
       );
-      await tester.pumpAndSettle();
+      await settleTranslation(tester);
       expect(
         tester.getRect(panelFinder).topLeft,
         resizedPanel.topLeft - const Offset(20, 20),
         reason: 'Dragging after a display resize starts from the visible, clamped position',
       );
       await tester.sendKeyEvent(LogicalKeyboardKey.escape);
-      await tester.pumpAndSettle();
+      await settleTranslation(tester);
       expect(find.byType(TranslationReadingPanel), findsNothing);
       expect(requests, 1);
       expect(bridge.recognized, 1);
@@ -320,12 +318,12 @@ void main() {
           .marks;
       expect(marks.map((m) => m.text), ['第一段译文', '第二段译文']);
       await tester.tap(find.byTooltip('对照阅读'));
-      await tester.pumpAndSettle();
+      await settleTranslation(tester);
       await tester.sendKeyEvent(LogicalKeyboardKey.enter);
       await tester.runAsync(
         () => Future<void>.delayed(const Duration(milliseconds: 100)),
       );
-      await tester.pumpAndSettle();
+      await settleTranslation(tester);
       expect(bridge.copied, isNotNull);
       await tester.runAsync(() async {
         Future<Uint8List> decode(Uint8List data) async {
@@ -398,18 +396,15 @@ void main() {
       await tester.runAsync(
         () => Future<void>.delayed(const Duration(milliseconds: 100)),
       );
-      await tester.pumpAndSettle();
+      await settleTranslation(tester);
       await tester.dragFrom(const Offset(50, 100), const Offset(240, 120));
-      await tester.pumpAndSettle();
+      await settleTranslation(tester);
       await tester.tap(find.byTooltip('翻译选区文字'));
-      await tester.pumpAndSettle();
-      expect(find.byTooltip('翻译语言'), findsNothing);
-      expect(find.byTooltip('切换翻译目标语言'), findsOneWidget);
-      await tester.tap(find.byTooltip('按当前语言翻译'));
+      await tester.pump();
       await tester.runAsync(
         () => Future<void>.delayed(const Duration(milliseconds: 100)),
       );
-      await tester.pumpAndSettle();
+      await settleTranslation(tester);
       expect(find.byType(TranslationReadingPanel), findsOneWidget);
       expect(
         find.byKey(const ValueKey('translation-reading-drag-handle')),
@@ -423,7 +418,7 @@ void main() {
           .marks;
       expect(visibleMarks(), isEmpty);
       await tester.tap(find.byTooltip('关闭对照阅读'));
-      await tester.pumpAndSettle();
+      await settleTranslation(tester);
       expect(visibleMarks(), hasLength(2));
       expect(tester.takeException(), isNull);
     },

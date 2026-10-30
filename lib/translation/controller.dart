@@ -32,12 +32,23 @@ class TranslationController extends ChangeNotifier {
   final ChannelStorage storage;
   final TranslationService service;
   List<TranslationChannel> _channels = defaultTranslationChannels();
-  List<TranslationChannel> get channels => List.unmodifiable(_channels);
+  List<TranslationChannel> get channels => List.unmodifiable(
+    _channels.map(
+      (c) => c.isLocal && localModelsReady ? c.copyWith(model: 'ready') : c,
+    ),
+  );
+  bool localModelsReady = false, downloadingLocalModels = false;
+  String localModelStatus = '尚未下载中英语言包';
+  double? localModelProgress;
+  bool localModelDownloadAttempted = false;
+  int _modelGeneration = 0;
+  ArgosOperation? _modelDownload;
+  Future<void>? _modelCheck;
   String activeId = 'argos_local';
   bool needsLocalModels = false;
   ArgosOperation? _localProbe;
   TranslationChannel? get activeChannel =>
-      _channels.where((c) => c.id == activeId).firstOrNull;
+      channels.where((c) => c.id == activeId).firstOrNull;
   TranslationLanguage from = TranslationLanguage.auto,
       to = TranslationLanguage.zh;
   bool initialized = false,
@@ -54,6 +65,83 @@ class TranslationController extends ChangeNotifier {
   void changed() {
     if (!_disposed) notifyListeners();
   }
+
+  Future<void> checkLocalModels() {
+    if (downloadingLocalModels || _disposed) return Future.value();
+    return _modelCheck ??= _checkLocalModels().whenComplete(
+      () => _modelCheck = null,
+    );
+  }
+
+  Future<void> _checkLocalModels() async {
+    final generation = _modelGeneration;
+    try {
+      final state = await service.argos.run({'command': 'status'}).future;
+      if (_disposed ||
+          downloadingLocalModels ||
+          generation != _modelGeneration) {
+        return;
+      }
+      localModelsReady = state['ready'] == true;
+      localModelStatus = localModelsReady ? '中英语言包已准备，可离线翻译' : '尚未下载中英语言包';
+    } on TranslationException catch (e) {
+      if (!_disposed &&
+          !downloadingLocalModels &&
+          generation == _modelGeneration) {
+        localModelStatus = e.message;
+      }
+    } catch (_) {
+      if (!_disposed &&
+          !downloadingLocalModels &&
+          generation == _modelGeneration) {
+        localModelStatus = '无法检查本地语言包，请重试';
+      }
+    }
+    changed();
+  }
+
+  Future<void> downloadLocalModels() async {
+    if (downloadingLocalModels || _disposed) return;
+    _modelGeneration++;
+    localModelDownloadAttempted = true;
+    downloadingLocalModels = true;
+    localModelStatus = '正在准备中英语言包，可在后台继续下载';
+    localModelProgress = null;
+    changed();
+    try {
+      final job = _modelDownload = service.argos.run(
+        {'command': 'install'},
+        timeout: const Duration(minutes: 30),
+        onProgress: (message, value) {
+          if (_disposed) return;
+          localModelStatus = message;
+          localModelProgress = value?.clamp(0, 1);
+          changed();
+        },
+      );
+      final state = await job.future;
+      if (_disposed) return;
+      if (state['ready'] != true) {
+        throw const TranslationException('语言包未准备完整，请重试');
+      }
+      localModelsReady = true;
+      localModelProgress = 1;
+      localModelStatus = '中英语言包下载完成，可离线翻译';
+      if (activeChannel?.isLocal == true) error = null;
+    } on TranslationCancelled {
+      if (!_disposed) localModelStatus = '下载已取消，可重新下载语言包';
+    } on TranslationException catch (e) {
+      if (!_disposed) localModelStatus = e.message;
+    } catch (_) {
+      if (!_disposed) localModelStatus = '语言包下载失败，请重试';
+    } finally {
+      downloadingLocalModels = false;
+      _modelDownload = null;
+      changed();
+    }
+  }
+
+  void cancelModelDownload() => _modelDownload?.cancel();
 
   Future<void> initialize() async {
     if (initialized || initializing) return;
@@ -223,10 +311,19 @@ class TranslationController extends ChangeNotifier {
 
   Future<void> translate({List<String>? segments}) async {
     if (translating || extracting) return;
+    final beforeProbe = _request;
+    if (activeChannel?.isLocal == true &&
+        activeChannel?.configured != true &&
+        !downloadingLocalModels) {
+      await checkLocalModels();
+      if (_disposed || beforeProbe != _request) return;
+    }
     final channel = activeChannel;
     if (channel?.isLocal == true && !channel!.configured && channel.isEnabled) {
       needsLocalModels = true;
-      error = '尚未下载中英语言包，下载后即可离线翻译';
+      error = downloadingLocalModels
+          ? '中英语言包正在后台下载，完成后即可翻译'
+          : '尚未下载中英语言包，下载后即可离线翻译';
       changed();
       return;
     }
@@ -253,6 +350,7 @@ class TranslationController extends ChangeNotifier {
         _localProbe = null;
         if (_disposed || request != _request) return;
         if (state['ready'] != true) {
+          localModelsReady = false;
           needsLocalModels = true;
           throw const TranslationException('语言包不存在，请先下载中英语言包');
         }
@@ -302,6 +400,7 @@ class TranslationController extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    _modelDownload?.cancel();
     service.dispose();
     cancel(notify: false);
     super.dispose();

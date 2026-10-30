@@ -1,4 +1,7 @@
 import 'dart:async';
+
+import 'package:screen_clip_win/translation/argos_engine.dart';
+
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -21,6 +24,27 @@ import 'package:desktop_vision/desktop_vision.dart';
 import 'widget_test.dart' show FakeBridge, sample;
 
 import 'dart:ui' as ui;
+
+Future<void> settleTranslation(WidgetTester tester) async {
+  // Pixel readback is a real engine task; advance frames and let it complete
+  // outside FakeAsync before settling the translation status animation.
+  for (var i = 0; i < 6; i++) {
+    await tester.pump(const Duration(milliseconds: 150));
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 30)),
+    );
+  }
+  await tester.pumpAndSettle();
+}
+
+class MissingModelsArgos extends ArgosEngine {
+  @override
+  ArgosOperation run(
+    Map<String, Object?> request, {
+    void Function(String, double?)? onProgress,
+    Duration timeout = const Duration(minutes: 3),
+  }) => ArgosOperation(Future.value({'ready': false}), () {});
+}
 
 class MemoryChannels implements ChannelStorage {
   String? value;
@@ -210,7 +234,7 @@ void main() {
     expect(mark.points.single, const Offset(100, 50));
     expect(mark.textFrame, const Size(200, 44));
     expect(painter.height + mark.padding * 2, lessThanOrEqualTo(44.01));
-    expect(mark.background.a, 1);
+    expect(mark.background.a, 0);
     painter.dispose();
   });
   test('Batch translation sends one ordered JSON array request', () async {
@@ -520,7 +544,10 @@ void main() {
         final bridge = TranslateOcrBridge();
         final lateResponse = Completer<http.Response>();
         final translation = mode == 'missing'
-            ? TranslationController(storage: MemoryChannels())
+            ? TranslationController(
+                storage: MemoryChannels(),
+                service: TranslationService(argos: MissingModelsArgos()),
+              )
             : await configured(
                 service: mode == 'cancel'
                     ? TranslationService(
@@ -567,12 +594,10 @@ void main() {
         await tester.runAsync(
           () => Future<void>.delayed(const Duration(milliseconds: 100)),
         );
-        await tester.pumpAndSettle();
+        await settleTranslation(tester);
         await tester.tap(find.byTooltip('翻译选区文字'));
-        await tester.pumpAndSettle();
-        expect(find.byTooltip('翻译语言'), findsNothing);
-        expect(find.byTooltip('切换翻译目标语言'), findsOneWidget);
-        await tester.tap(find.byTooltip('按当前语言翻译'));
+        await tester.pump();
+        expect(find.byTooltip('按当前语言翻译'), findsNothing);
         await tester.runAsync(
           () => Future<void>.delayed(const Duration(milliseconds: 100)),
         );
@@ -594,20 +619,32 @@ void main() {
               200,
             ),
           );
-          await tester.pumpAndSettle();
+          await settleTranslation(tester);
           expect(find.byType(OcrScanOverlay), findsNothing);
           expect(find.text('翻译完成'), findsNothing);
+          expect(find.text('翻译已停止'), findsOneWidget);
+          expect(find.byTooltip('切换翻译目标语言'), findsOneWidget);
+          await tester.tap(find.byTooltip('切换翻译目标语言'));
+          await settleTranslation(tester);
+          await tester.tap(find.byTooltip('目标语言：英文'));
+          await tester.pump();
+          await tester.runAsync(
+            () => Future<void>.delayed(const Duration(milliseconds: 150)),
+          );
+          await settleTranslation(tester);
+          expect(translation.to, TranslationLanguage.en);
+          expect(translation.result, isNotNull);
           expect(tester.takeException(), isNull);
           return;
         }
-        await tester.pumpAndSettle();
+        await settleTranslation(tester);
         if (mode == 'missing') {
           expect(bridge.recognized, 0);
           expect(find.byType(TranslationPanel), findsOneWidget);
           expect(find.text('下载中英语言包'), findsOneWidget);
           expect(bridge.inputModes.last, isTrue);
           await tester.sendKeyEvent(LogicalKeyboardKey.escape);
-          await tester.pumpAndSettle();
+          await settleTranslation(tester);
           expect(find.byType(TranslationPanel), findsNothing);
           expect(bridge.inputModes.last, isFalse);
           expect(tester.takeException(), isNull);
@@ -630,11 +667,11 @@ void main() {
           return;
         }
         expect(annotations().single.text, '你好，世界。');
-        expect(annotations().single.background.a, 1);
-        expect(annotations().single.tool, MarkTool.text);
+        expect(annotations().single.background.a, 0);
+        expect(annotations().single.tool, MarkTool.translation);
         final completed = translation.result;
         await tester.tap(find.byTooltip('对照阅读'));
-        await tester.pumpAndSettle();
+        await settleTranslation(tester);
         expect(find.byType(TranslationReadingPanel), findsOneWidget);
         expect(
           annotations(),
@@ -644,16 +681,41 @@ void main() {
         expect(identical(translation.result, completed), isTrue);
         expect(bridge.recognized, 1);
         await tester.tap(find.byTooltip('关闭对照阅读'));
-        await tester.pumpAndSettle();
+        await settleTranslation(tester);
         expect(find.byType(TranslationReadingPanel), findsNothing);
         expect(annotations().single.text, '你好，世界。');
+        final overlay = annotations().single;
+        expect(overlay.fontSize, greaterThan(0));
+        await tester.tapAt(
+          overlay.points.first +
+              Offset(
+                overlay.textBoxSize.width / 2,
+                overlay.textBoxSize.height / 2,
+              ),
+        );
+        await settleTranslation(tester);
+        expect(find.byType(EditableText), findsNothing);
+        expect(find.byTooltip('完成文字'), findsNothing);
+        expect(annotations().single.tool, MarkTool.translation);
 
         await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
         await tester.sendKeyEvent(LogicalKeyboardKey.keyZ);
         await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
-        await tester.pumpAndSettle();
+        await settleTranslation(tester);
         expect(annotations(), isEmpty);
         expect(find.byType(CaptureEditor), findsOneWidget);
+        await tester.tap(find.byTooltip('切换翻译目标语言'));
+        await settleTranslation(tester);
+        await tester.tap(find.byTooltip('目标语言：英文'));
+        await tester.pump();
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 150)),
+        );
+        await settleTranslation(tester);
+        expect(translation.to, TranslationLanguage.en);
+        expect(translation.result, isNotNull);
+        expect(identical(translation.result, completed), false);
+        expect(annotations().single.text, '你好，世界。');
         expect(tester.takeException(), isNull);
       },
     );

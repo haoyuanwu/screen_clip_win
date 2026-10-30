@@ -1,4 +1,6 @@
 import '../translation/ui/language_controls.dart';
+import '../translation/ocr_paragraphs.dart';
+import '../translation/source_appearance.dart';
 
 import 'dart:async';
 import 'dart:convert';
@@ -38,6 +40,7 @@ enum MarkTool {
   circle,
   ellipse,
   text,
+  translation,
   number,
   redact,
   mosaic,
@@ -108,6 +111,7 @@ class Mark {
     this.minTextWidth = 0,
     this.background = Colors.transparent,
     this.translationId,
+    this.sourceRestoration = const [],
     this.padding = 10,
     this.textFrame,
     this.rotation = 0,
@@ -125,6 +129,7 @@ class Mark {
   final bool bold, italic, underline;
   final Color background;
   final int? translationId;
+  final List<(Rect, Color)> sourceRestoration;
   final double padding;
   final Size? textFrame;
   final double rotation;
@@ -140,9 +145,11 @@ class Mark {
     double? inset,
     TextAlign? alignment,
     Color? background,
+    Color? ink,
+    List<(Rect, Color)>? sourceRestoration,
   }) => Mark(
     tool,
-    color,
+    ink ?? color,
     width,
     [position ?? points.first],
     text: text,
@@ -154,6 +161,7 @@ class Mark {
     minTextWidth: minTextWidth,
     background: background ?? this.background,
     translationId: translationId,
+    sourceRestoration: sourceRestoration ?? this.sourceRestoration,
     padding: inset ?? padding,
     textFrame: frame ?? textFrame,
     rotation: angle ?? rotation,
@@ -186,8 +194,8 @@ class Mark {
       );
 }
 
-/// Translation is a normal editable annotation, so exports and undo share
-/// exactly the same layout and background as the screenshot preview.
+/// Read-only translation overlay. It shares export/undo geometry with marks,
+/// but is never hit-tested as a text input or given editing handles.
 Mark imageTranslationMark(String text, Rect target, {int? translationId}) {
   final padding = math.min(3.0, math.min(target.width, target.height) / 8);
   double low = .1, high = math.max(1, target.height / 1.3);
@@ -214,7 +222,7 @@ Mark imageTranslationMark(String text, Rect target, {int? translationId}) {
     }
   }
   return Mark(
-    MarkTool.text,
+    MarkTool.translation,
     const Color(0xff302719),
     1,
     [target.topLeft],
@@ -222,9 +230,106 @@ Mark imageTranslationMark(String text, Rect target, {int? translationId}) {
     fontSize: low,
     padding: padding,
     textFrame: target.size,
-    background: const Color(0xffffedc7),
+    background: Colors.transparent,
     translationId: translationId,
   );
+}
+
+/// Use the largest size that fits every passage rather than scaling each
+/// translation independently. Short labels no longer become oversized.
+List<Mark> uniformTranslationMarks(List<Mark> marks) {
+  if (marks.isEmpty) return marks;
+  final size = marks.map((m) => m.fontSize).reduce(math.min);
+  return marks.map((m) => m.copyText(size: size)).toList();
+}
+
+/// Keep translated text readable by growing its frame before reducing type.
+/// Candidate edges come from source positions and already placed frames.
+List<Mark> layoutTranslationMarks(
+  List<Mark> marks,
+  Rect bounds, {
+  double scale = 1,
+  bool mimicSource = false,
+}) {
+  if (marks.isEmpty) return marks;
+  final zoom = math.max(.01, scale);
+  final gap = 4 / zoom;
+  for (double size = 20 / zoom; size >= .1 / zoom; size *= .85) {
+    final placed = <Mark>[];
+    for (final mark in marks) {
+      final fontSize = mimicSource ? mark.fontSize * size * zoom / 20 : size;
+      Rect? best;
+      double score = double.infinity;
+      final origin = mark.points.first;
+      final xs = <double>{
+        origin.dx,
+        bounds.left,
+        for (final m in placed) m.points.first.dx + m.textBoxSize.width + gap,
+      };
+      final ys = <double>{
+        origin.dy,
+        bounds.top,
+        for (final m in placed) m.points.first.dy + m.textBoxSize.height + gap,
+      };
+      for (final x in xs) {
+        if (x < bounds.left || x >= bounds.right) continue;
+        final available = bounds.right - x;
+        final widths = <double>{
+          math.min(available, math.max(mark.textBoxSize.width, 180 / zoom)),
+          math.min(available, math.max(mark.textBoxSize.width, 360 / zoom)),
+          available,
+        };
+        for (final width in widths) {
+          if (width <= 8 / zoom) continue;
+          final draft = mark.copyText(
+            size: fontSize,
+            inset: 3 / zoom,
+            frame: Size(width, bounds.height),
+          );
+          final painter = draft.textPainter;
+          final height = math.max(
+            mark.textBoxSize.height,
+            painter.height + draft.padding * 2,
+          );
+          final textFits = painter.computeLineMetrics().every(
+            (line) => line.width <= width - draft.padding * 2 + .01,
+          );
+          painter.dispose();
+          if (!textFits) continue;
+          for (final y in ys) {
+            final rect = Rect.fromLTWH(x, y, width, height);
+            if (rect.top < bounds.top || rect.bottom > bounds.bottom) continue;
+            if (placed.any(
+              (m) => rect.overlaps(
+                (m.points.first & m.textBoxSize).inflate(gap / 2),
+              ),
+            )) {
+              continue;
+            }
+            final cost =
+                (rect.topLeft - origin).distance * 4 +
+                (width - mark.textBoxSize.width).abs() * .1 +
+                height;
+            if (cost < score) {
+              best = rect;
+              score = cost;
+            }
+          }
+        }
+      }
+      if (best == null) break;
+      placed.add(
+        mark.copyText(
+          position: best.topLeft,
+          frame: best.size,
+          size: fontSize,
+          inset: 3 / zoom,
+        ),
+      );
+    }
+    if (placed.length == marks.length) return placed;
+  }
+  throw const FormatException('译文过多，当前选区无法完整排版，请缩小翻译范围');
 }
 
 Offset rotateTextVector(Offset point, double angle) => Offset(
@@ -397,6 +502,7 @@ void drawMark(Canvas canvas, Mark mark) {
     case MarkTool.mosaic:
       break; // Blur is composited beneath every annotation by paintCapture.
     case MarkTool.text:
+    case MarkTool.translation:
       final size = mark.textBoxSize;
       canvas.save();
       canvas.translate(first.dx + size.width / 2, first.dy + size.height / 2);
@@ -479,6 +585,11 @@ void paintCapture(
     image.height.toDouble(),
   );
   canvas.drawImage(image, Offset.zero, Paint());
+  for (final mark in marks) {
+    for (final (rect, color) in mark.sourceRestoration) {
+      canvas.drawRect(rect, Paint()..color = color);
+    }
+  }
   for (final effect in [MarkTool.redact, MarkTool.mosaic]) {
     if (!marks.any((m) => m.tool == effect)) continue;
     canvas.saveLayer(bounds, Paint());
@@ -573,7 +684,6 @@ class CaptureEditor extends StatefulWidget {
 
 class _CaptureEditorState extends State<CaptureEditor> {
   bool translationOpen = false;
-  bool translationLanguagesOpen = false;
   void closeTranslation() {
     widget.controller.translation.cancel();
     setState(() => translationOpen = false);
@@ -608,6 +718,15 @@ class _CaptureEditorState extends State<CaptureEditor> {
   }
 
   bool get readingActive => translationReading && readingPassages.isNotEmpty;
+  Mark? translationAt(Offset point) => readingActive
+      ? null
+      : marks.reversed
+            .where(
+              (m) =>
+                  m.tool == MarkTool.translation &&
+                  (m.points.first & m.textBoxSize).contains(point),
+            )
+            .firstOrNull;
   List<Mark> get visibleMarks {
     if (!readingActive) return marks;
     final ids = translationPassages.map((p) => p.id).toSet();
@@ -624,6 +743,7 @@ class _CaptureEditorState extends State<CaptureEditor> {
     commitText();
     setState(() {
       translationReading = !translationReading;
+      if (!translationReading) tool = MarkTool.select;
       selectedTextIndex = null;
       activeTranslationId ??= readingPassages.firstOrNull?.id;
     });
@@ -635,11 +755,11 @@ class _CaptureEditorState extends State<CaptureEditor> {
   int imageTranslationRequest = 0;
   String? imageTranslationStatus, imageTranslationFailure;
 
-  void cancelImageTranslation() {
+  void cancelImageTranslation({bool keepToolbar = false}) {
     imageTranslationRequest++;
     widget.controller.translation.cancel();
     translatingImage = false;
-    imageTranslationStatus = null;
+    imageTranslationStatus = keepToolbar ? '已停止翻译，可切换语言后继续' : null;
     imageTranslationFailure = null;
   }
 
@@ -651,7 +771,6 @@ class _CaptureEditorState extends State<CaptureEditor> {
     dismissTextPrompt();
     setState(() {
       translatingImage = true;
-      translationLanguagesOpen = false;
       translationReading = false;
       imageTranslationFailure = null;
       imageTranslationStatus = '正在准备翻译';
@@ -659,6 +778,11 @@ class _CaptureEditorState extends State<CaptureEditor> {
     scheduleCaptureFrame();
     await c.initialize();
     if (!mounted || request != imageTranslationRequest) return;
+    if (c.activeChannel?.isLocal == true &&
+        c.activeChannel?.configured != true) {
+      await c.checkLocalModels();
+      if (!mounted || request != imageTranslationRequest) return;
+    }
     if (!c.initialized ||
         c.activeChannel?.configured != true ||
         c.activeChannel?.isEnabled != true) {
@@ -676,6 +800,10 @@ class _CaptureEditorState extends State<CaptureEditor> {
     }
     OcrSelection? temporary;
     try {
+      final pixels = await image!.toByteData(
+        format: ui.ImageByteFormat.rawRgba,
+      );
+      if (!mounted || request != imageTranslationRequest) return;
       setState(() => imageTranslationStatus = '正在识别选区文字');
       scheduleCaptureFrame();
       var selection = ocrSelection;
@@ -691,26 +819,10 @@ class _CaptureEditorState extends State<CaptureEditor> {
         if (!mounted || request != imageTranslationRequest) return;
         selection = temporary = OcrSelection(recognized);
       }
-      final groups = <int, List<OcrGlyph>>{};
-      for (final glyph in selection.glyphs) {
-        if (!selection.selection.isCollapsed &&
-            (glyph.end <= selection.selection.start ||
-                glyph.start >= selection.selection.end)) {
-          continue;
-        }
-        groups.putIfAbsent(glyph.line, () => []).add(glyph);
-      }
-      if (groups.isEmpty) throw const FormatException('选区中没有识别到文字');
-      final texts = <String>[];
-      final boxes = <Rect>[];
-      for (final glyphs in groups.values) {
-        texts.add(
-          selection.text.substring(glyphs.first.start, glyphs.last.end),
-        );
-        boxes.add(
-          glyphs.map((g) => g.box).reduce((a, b) => a.expandToInclude(b)),
-        );
-      }
+      final paragraphs = translationParagraphs(selection, region!.size);
+      if (paragraphs.isEmpty) throw const FormatException('选区中没有识别到文字');
+      final texts = paragraphs.map((p) => p.text).toList();
+      final boxes = paragraphs.map((p) => p.box).toList();
       c.setSource(texts.join('\n'), label: '截图选区');
       setState(() => imageTranslationStatus = '正在翻译 ${texts.length} 处文字');
       scheduleCaptureFrame();
@@ -760,28 +872,78 @@ class _CaptureEditorState extends State<CaptureEditor> {
             box: target,
           ),
         );
+        final lineBoxes = <int, Rect>{};
+        for (final glyph in selection.glyphs) {
+          if (!box.overlaps(glyph.box)) continue;
+          final r = Rect.fromLTWH(
+            region!.left + glyph.box.left * region!.width,
+            region!.top + glyph.box.top * region!.height,
+            glyph.box.width * region!.width,
+            glyph.box.height * region!.height,
+          );
+          lineBoxes.update(
+            glyph.line,
+            (old) => old.expandToInclude(r),
+            ifAbsent: () => r,
+          );
+        }
+        final appearance = pixels == null
+            ? null
+            : sourceAppearance(pixels, image!.width, image!.height, target);
+        final heights = lineBoxes.values.map((r) => r.height).toList()..sort();
+        final sourceSize = heights.isEmpty
+            ? target.height / 1.3
+            : heights[heights.length ~/ 2] / 1.15;
         translated.add(
-          imageTranslationMark(decoded[i] as String, target, translationId: id),
+          imageTranslationMark(
+            decoded[i] as String,
+            target,
+            translationId: id,
+          ).copyText(
+            size: sourceSize,
+            inset: 0,
+            ink: appearance?.ink,
+            sourceRestoration: pixels == null
+                ? []
+                : [
+                    for (final line in lineBoxes.values)
+                      (
+                        line.inflate(1).intersect(bounds),
+                        sourceAppearance(
+                          pixels,
+                          image!.width,
+                          image!.height,
+                          line,
+                        ).background,
+                      ),
+                  ],
+          ),
         );
       }
+      final viewport = viewportKey.currentContext?.findRenderObject();
+      final sy = viewport is RenderBox && viewport.hasSize
+          ? viewport.size.height / widget.clip.height
+          : 1.0;
+      final uniformMarks = layoutTranslationMarks(
+        translated,
+        region!,
+        scale: sy,
+        mimicSource: true,
+      );
       setState(() {
         clearOcr(cancelTranslation: false);
         commit();
         marks.removeWhere(
           (m) => translationPassages.any((p) => p.id == m.translationId),
         );
-        marks.addAll(translated);
+        marks.addAll(uniformMarks);
         translationPassages = passages;
-        final viewport = viewportKey.currentContext?.findRenderObject();
         final sx = viewport is RenderBox && viewport.hasSize
             ? viewport.size.width / widget.clip.width
             : 1.0;
-        final sy = viewport is RenderBox && viewport.hasSize
-            ? viewport.size.height / widget.clip.height
-            : 1.0;
         translationReading = prefersTranslationReading(
           Size(region!.width * sx, region!.height * sy),
-          textSizes: translated.map((m) => m.fontSize * sy),
+          textSizes: uniformMarks.map((m) => m.fontSize * sy),
         );
         translationReadingPosition = null;
         activeTranslationId = passages.firstOrNull?.id;
@@ -794,7 +956,7 @@ class _CaptureEditorState extends State<CaptureEditor> {
         ));
         operations.add(3);
         tool = MarkTool.select;
-        imageTranslationStatus = '已翻译 ${translated.length} 处 · 可拖动编辑，支持撤销';
+        imageTranslationStatus = '已翻译 ${translated.length} 处 · 只读译文，可切换语言或撤销';
       });
     } catch (e) {
       if (mounted && request == imageTranslationRequest) {
@@ -1793,7 +1955,7 @@ class _CaptureEditorState extends State<CaptureEditor> {
     if (translatingImage ||
         imageTranslationFailure != null ||
         imageTranslationStatus != null) {
-      setState(cancelImageTranslation);
+      setState(() => cancelImageTranslation(keepToolbar: translatingImage));
       return;
     }
     if (colorPicker != null || preparingColor) {
@@ -1835,6 +1997,7 @@ class _CaptureEditorState extends State<CaptureEditor> {
 
   void begin(Offset p, double tolerance) {
     if (locked) return;
+    if (translationAt(p) != null) return;
     dismissTextPrompt();
     cursor = p;
     focus.requestFocus();
@@ -2380,39 +2543,26 @@ class _CaptureEditorState extends State<CaptureEditor> {
         onChanged: locked ? null : onChanged,
       ),
     );
-    final inspector = translationLanguagesOpen
+    final inspector =
+        (readingPassages.isNotEmpty &&
+                (tool == MarkTool.select || readingActive)) ||
+            translatingImage ||
+            imageTranslationStatus != null ||
+            imageTranslationFailure != null
         ? ToolbarWrap(
             children: [
               TranslationLanguages(
                 controller: widget.controller.translation,
                 disabled: translatingImage,
+                onChanged: openTranslation,
               ),
-              ToolButton(
-                label: '按当前语言翻译',
-                icon: CupertinoIcons.globe,
-                onPressed: locked ? null : openTranslation,
-                child: const Text('翻译'),
-              ),
-              ToolButton(
-                label: '收起翻译语言',
-                icon: CupertinoIcons.xmark,
-                onPressed: () =>
-                    setState(() => translationLanguagesOpen = false),
-              ),
-            ],
-          )
-        : (readingPassages.isNotEmpty &&
-                  (tool == MarkTool.select || readingActive)) ||
-              translatingImage ||
-              imageTranslationStatus != null ||
-              imageTranslationFailure != null
-        ? ToolbarWrap(
-            children: [
               OcrStatus(
                 title: translatingImage
                     ? imageTranslationStatus!
                     : imageTranslationFailure != null
                     ? '翻译未完成'
+                    : imageTranslationStatus == '已停止翻译，可切换语言后继续'
+                    ? '翻译已停止'
                     : '翻译完成',
                 detail:
                     imageTranslationFailure ??
@@ -2453,7 +2603,9 @@ class _CaptureEditorState extends State<CaptureEditor> {
                 ToolButton(
                   label: translatingImage ? '取消翻译' : '收起翻译提示',
                   child: Text(translatingImage ? '取消' : '收起'),
-                  onPressed: () => setState(cancelImageTranslation),
+                  onPressed: () => setState(
+                    () => cancelImageTranslation(keepToolbar: translatingImage),
+                  ),
                 ),
             ],
           )
@@ -3033,18 +3185,11 @@ class _CaptureEditorState extends State<CaptureEditor> {
             size: 28,
             label: '翻译选区文字',
             icon: CupertinoIcons.globe,
-            selected: translationLanguagesOpen,
+            selected: translatingImage || readingPassages.isNotEmpty,
             onPressed:
                 locked || image == null || region == null || active != null
                 ? null
-                : () {
-                    widget.controller.translation.initialize();
-                    setState(
-                      () =>
-                          translationLanguagesOpen = !translationLanguagesOpen,
-                    );
-                    scheduleCaptureFrame();
-                  },
+                : openTranslation,
           ),
           annotationButton((
             privacyTool,
@@ -3516,13 +3661,25 @@ class _CaptureEditorState extends State<CaptureEditor> {
                                   commitText();
                                   return;
                                 }
+                                final overlay = translationAt(p);
+                                if (overlay != null) {
+                                  selectTranslationPassage(
+                                    overlay.translationId!,
+                                  );
+                                  return;
+                                }
                                 if (tool == MarkTool.line && region != null) {
                                   tapLine(p);
                                   return;
                                 }
                                 final hit = textHit(p, 10 / sx);
                                 if (hit != null) {
-                                  setState(() => selectedTextIndex = hit.index);
+                                  setState(() {
+                                    selectedTextIndex = hit.index;
+                                    activeTranslationId =
+                                        marks[hit.index].translationId ??
+                                        activeTranslationId;
+                                  });
                                   if (hit.kind != 'rotate' &&
                                       (Offset.zero &
                                               marks[hit.index].textBoxSize)

@@ -4,16 +4,19 @@ No source text is sent over the network. Only explicit install uses HTTPS.
 import argparse
 import hashlib
 import contextlib
+import ctypes
 import json
 import os
 from pathlib import Path
 import re
 import shutil
+import ssl
 import sys
 import tempfile
 import urllib.request
 import urllib.error
 import zipfile
+import certifi
 
 PAIRS = {"en-zh": "https://argos-net.com/v1/translate-en_zh-1_9.argosmodel",
          "zh-en": "https://argos-net.com/v1/translate-zh_en-1_9.argosmodel"}
@@ -21,6 +24,22 @@ PAIRS = {"en-zh": "https://argos-net.com/v1/translate-en_zh-1_9.argosmodel",
 
 def emit(**data):
     print(json.dumps(data, ensure_ascii=True), flush=True)
+
+
+@contextlib.contextmanager
+def native_diagnostics():
+    # Python redirect_stdout does not capture C/C++ libraries (e.g. Intel MKL).
+    # Keep fd 1 exclusively for JSON, flushing C buffers before restoring it.
+    saved = os.dup(1)
+    try:
+        os.dup2(2, 1)
+        yield
+    finally:
+        sys.stderr.flush()
+        if sys.platform != 'win32':
+            ctypes.CDLL(None).fflush(None)
+        os.dup2(saved, 1)
+        os.close(saved)
 
 
 def model_path(root, pair):
@@ -38,7 +57,9 @@ def install(root):
             archive = temp / "model.zip"
             request = urllib.request.Request(url, headers={"User-Agent": "ScreenClip/1.1.2 (Argos model downloader)"})
             digest = hashlib.sha256()
-            with urllib.request.urlopen(request, timeout=60) as response, archive.open("wb") as output:
+            # Frozen Python cannot rely on the build machine's CA file path.
+            context = ssl.create_default_context(cafile=certifi.where())
+            with urllib.request.urlopen(request, timeout=60, context=context) as response, archive.open("wb") as output:
                 if not response.url.startswith("https://"):
                     raise ValueError("语言包下载需要 HTTPS")
                 total = int(response.headers.get("Content-Length", 0))
@@ -146,7 +167,7 @@ def main():
     command = request.get("command")
     try:
         # Native inference libraries may log to stdout; reserve it for protocol.
-        with contextlib.redirect_stdout(sys.stderr):
+        with contextlib.redirect_stdout(sys.stderr), native_diagnostics():
             if command == "status":
                 data = {"ready": all(model_path(root, p) for p in PAIRS)}
             elif command == "translate":

@@ -1,4 +1,7 @@
 import 'dart:async';
+
+import 'translation_test.dart' show settleTranslation;
+
 import 'dart:convert';
 import 'dart:ui' as ui;
 
@@ -85,10 +88,10 @@ void main() {
         await tester.ensureVisible(input('API Key'));
         await tester.enterText(input('API Key'), 'changed-key');
         pending.complete(reply('你好'));
-        await tester.pumpAndSettle();
+        await settleTranslation(tester);
         expect(find.text('验证通过，当前 Key 与模型可用'), findsNothing);
       } else {
-        await tester.pumpAndSettle();
+        await settleTranslation(tester);
         expect(
           find.textContaining(mode == 'unauthorized' ? '认证失败' : '验证通过'),
           findsOneWidget,
@@ -97,7 +100,7 @@ void main() {
         if (mode == 'success') {
           await tester.ensureVisible(input('模型名称 / 接入点 ID'));
           await tester.enterText(input('模型名称 / 接入点 ID'), 'another-model');
-          await tester.pumpAndSettle();
+          await settleTranslation(tester);
           expect(find.text('验证通过，当前 Key 与模型可用'), findsNothing);
         }
       }
@@ -164,7 +167,7 @@ void main() {
       await tester.runAsync(
         () => Future<void>.delayed(const Duration(milliseconds: 100)),
       );
-      await tester.pumpAndSettle();
+      await settleTranslation(tester);
       SelectionPainter capture() => tester
           .widgetList<CustomPaint>(find.byType(CustomPaint))
           .map((w) => w.painter)
@@ -172,15 +175,12 @@ void main() {
           .first;
       await tester.tap(find.byTooltip('画笔 · P'));
       await tester.dragFrom(const Offset(40, 40), const Offset(80, 60));
-      await tester.pumpAndSettle();
+      await settleTranslation(tester);
       final originalMark = capture().marks.single;
       final selection = capture().region;
       await tester.tap(find.byTooltip('翻译选区文字'));
-      await tester.pumpAndSettle();
-      expect(find.byTooltip('翻译语言'), findsNothing);
-      expect(find.byTooltip('切换翻译目标语言'), findsOneWidget);
-      await tester.tap(find.byTooltip('按当前语言翻译'));
-      await tester.pumpAndSettle();
+      await tester.pump();
+      await settleTranslation(tester);
       expect(c.panel, 'capture');
       expect(identical(c.clip, clip), isTrue);
       expect(capture().region, selection);
@@ -191,14 +191,14 @@ void main() {
         isTrue,
       );
       await tester.tap(find.byType(Switch).first);
-      await tester.pumpAndSettle();
+      await settleTranslation(tester);
       await tester.tap(find.text('配置').first);
-      await tester.pumpAndSettle();
+      await settleTranslation(tester);
       await tester.enterText(input('API Key'), 'new-capture-key');
       final verify = find.widgetWithText(OutlinedButton, '验证 API Key');
       await tester.ensureVisible(verify);
       await tester.tap(verify);
-      await tester.pumpAndSettle();
+      await settleTranslation(tester);
       expect(find.text('验证通过，当前 Key 与模型可用'), findsOneWidget);
       expect(bridge.recognized, 0);
       expect(capture().region, selection);
@@ -208,7 +208,7 @@ void main() {
       await tester.runAsync(
         () => Future<void>.delayed(const Duration(milliseconds: 100)),
       );
-      await tester.pumpAndSettle();
+      await settleTranslation(tester);
       expect(find.byType(TranslationPanel), findsNothing);
       expect(c.panel, 'capture');
       expect(identical(c.clip, clip), isTrue);

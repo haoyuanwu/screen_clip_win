@@ -21,6 +21,16 @@ mkdir -p "$root/dist"
 stage="$(mktemp -d "$root/dist/macos-$version.XXXXXX")"
 app="$stage/定格T.app"
 ditto "$source_app" "$app"
+python3 - "$app" <<'PY'
+from pathlib import Path
+import shutil
+import sys
+app = Path(sys.argv[1])
+for relative in ['Contents/Helpers/argos', 'Contents/Resources/argos']:
+    path = app / relative
+    if path.exists():
+        shutil.rmtree(path)
+PY
 if [[ "$target" == arm64 ]]; then
   helper_source="${ARGOS_HELPER_ARM64:-}"
 else
@@ -43,6 +53,16 @@ import sys
 import os
 
 app = Path(sys.argv[1])
+# Keep Python data out of the code-only Helpers signing location.
+helper_data = app / 'Contents/Resources/argos'
+helper_data.mkdir(parents=True, exist_ok=True)
+shutil_source = app / 'Contents/Helpers/argos/_internal'
+shutil_source.rename(helper_data / '_internal')
+shutil_source.symlink_to('../../Resources/argos/_internal')
+for name in ['licenses', 'NOTICE.md']:
+    source = app / 'Contents/Helpers/argos' / name
+    if source.exists():
+        source.rename(helper_data / name)
 # Thin every Mach-O file, including Flutter, plugins and bundled native libraries.
 magics = {b'\xca\xfe\xba\xbe', b'\xbe\xba\xfe\xca', b'\xca\xfe\xba\xbf', b'\xbf\xba\xfe\xca',
           b'\xcf\xfa\xed\xfe', b'\xfe\xed\xfa\xcf', b'\xce\xfa\xed\xfe', b'\xfe\xed\xfa\xce'}

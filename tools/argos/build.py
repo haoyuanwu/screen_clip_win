@@ -22,7 +22,7 @@ subprocess.run([str(python), "-m", "pip", "install", "-r", str(ROOT / "tools/arg
 subprocess.run([str(python), "-m", "PyInstaller", "--noconfirm", "--clean", "--onedir",
     "--name", "screenclip_argos", "--distpath", str(ROOT / "build/argos-dist"),
     "--workpath", str(ROOT / "build/argos-pyinstaller"), "--specpath", str(ROOT / "build"),
-    "--collect-all", "ctranslate2", "--collect-all", "sentencepiece",
+    "--collect-all", "ctranslate2", "--collect-all", "sentencepiece", "--collect-data", "certifi",
     "--copy-metadata", "ctranslate2", "--copy-metadata", "sentencepiece",
     str(ROOT / "tools/argos/worker.py")], check=True)
 source = ROOT / "build/argos-dist/screenclip_argos"
@@ -32,7 +32,7 @@ shutil.copy2(ROOT / "tools/argos/NOTICE.md", args.destination / "NOTICE.md")
 # Copy license texts explicitly: metadata files alone may omit wheel licenses.
 script = """import importlib.metadata as m, pathlib, shutil, sys
 out=pathlib.Path(sys.argv[1])
-for package in ['ctranslate2','sentencepiece','numpy','setuptools','pyinstaller']:
+for package in ['ctranslate2','sentencepiece','numpy','setuptools','pyinstaller','certifi']:
  d=m.distribution(package)
  for item in d.files or []:
   if any(v in str(item).lower() for v in ['license','copying','notice']):

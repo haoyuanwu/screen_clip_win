@@ -11,9 +11,11 @@ class TranslationLanguages extends StatefulWidget {
     super.key,
     required this.controller,
     this.disabled = false,
+    this.onChanged,
   });
   final TranslationController controller;
   final bool disabled;
+  final VoidCallback? onChanged;
   @override
   State<TranslationLanguages> createState() => _TranslationLanguagesState();
 }
@@ -62,7 +64,7 @@ class _TranslationLanguagesState extends State<TranslationLanguages> {
                   onPressed: disabled
                       ? null
                       : () async {
-                          await c.languages(
+                          final success = await c.languages(
                             c.to,
                             c.from == TranslationLanguage.auto
                                 ? (c.to == TranslationLanguage.zh
@@ -70,6 +72,7 @@ class _TranslationLanguagesState extends State<TranslationLanguages> {
                                       : TranslationLanguage.zh)
                                 : c.from,
                           );
+                          if (mounted && success) widget.onChanged?.call();
                           scheduleCaptureFrame();
                         },
                 ),
@@ -112,6 +115,7 @@ class _TranslationLanguagesState extends State<TranslationLanguages> {
                                       );
                                       if (mounted && success) {
                                         setState(() => source = null);
+                                        widget.onChanged?.call();
                                       }
                                       scheduleCaptureFrame();
                                     },
