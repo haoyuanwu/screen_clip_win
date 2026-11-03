@@ -97,6 +97,7 @@ class DesktopBridge {
       });
   Future<void> copy(Uint8List bytes) => channel.invokeMethod('copy', bytes);
   Future<void> permissions() => channel.invokeMethod('permissions');
+  Future<void> revealApplication() => channel.invokeMethod('revealApplication');
   Future<void> present(String panel) => channel.invokeMethod('present', panel);
   Future<bool> captureFrameReady(Size viewport) async =>
       await channel.invokeMethod<bool>('captureFrameReady', {

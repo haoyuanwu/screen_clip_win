@@ -564,10 +564,20 @@ class Preferences extends StatelessWidget {
           if (Platform.isMacOS)
             Padding(
               padding: const EdgeInsets.only(top: 12),
-              child: ToolButton(
-                label: '打开屏幕录制权限设置',
-                onPressed: () => c.perform(c.bridge.permissions),
-                child: const Text('屏幕录制权限…'),
+              child: Wrap(
+                spacing: 8,
+                children: [
+                  ToolButton(
+                    label: '打开屏幕录制权限设置',
+                    onPressed: () => c.perform(c.bridge.permissions),
+                    child: const Text('屏幕录制权限…'),
+                  ),
+                  ToolButton(
+                    label: '在访达中显示当前应用',
+                    onPressed: () => c.perform(c.bridge.revealApplication),
+                    child: const Text('定位当前应用'),
+                  ),
+                ],
               ),
             ),
           const SizedBox(height: 20),

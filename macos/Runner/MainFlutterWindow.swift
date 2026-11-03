@@ -281,6 +281,9 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
         }
       case "permissions":
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") { NSWorkspace.shared.open(url) }; result(nil)
+      case "revealApplication":
+        NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
+        result(nil)
       case "openServiceUrl":
         guard let value = call.arguments as? String, let url = URL(string: value),
               ["http", "https"].contains(url.scheme?.lowercased() ?? ""), url.host?.isEmpty == false else {
@@ -604,7 +607,8 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
         self.capturing = false
         let failure = error as NSError
         if failure.domain == SCStreamErrorDomain && failure.code == SCStreamError.Code.userDeclined.rawValue {
-          result(FlutterError(code: "permission", message: "当前应用未获准录制屏幕，请在系统设置 → 隐私与安全性 → 屏幕与系统音频录制中确认授权后重试。", details: nil))
+          let appPath = Bundle.main.bundleURL.path
+          result(FlutterError(code: "permission", message: "系统仍拒绝当前应用的屏幕录制访问。\n请在系统设置 → 隐私与安全性 → 屏幕与系统音频录制中开启「定格T」，然后从菜单栏选择退出并重新打开（只关闭窗口不会退出）。\n如果开关已经打开仍反复提示，请移除旧的「定格T」条目，再添加当前应用并重新授权。升级后的临时签名可能与旧授权不匹配。\n当前运行位置：\(appPath)", details: ["applicationPath": appPath]))
         } else {
           result(FlutterError(code: "capture", message: error.localizedDescription, details: nil))
         }
