@@ -494,7 +494,10 @@ class Preferences extends StatelessWidget {
                   selected: c.launchAtLogin,
                   onPressed: c.startupBusy
                       ? null
-                      : () => c.setLaunchAtLogin(!c.launchAtLogin),
+                      : () => c.setLaunchAtLogin(
+                          !c.launchAtLogin,
+                          openSettings: Platform.isMacOS && !c.launchAtLogin,
+                        ),
                   child: Text(
                     c.startupBusy
                         ? '设置中…'

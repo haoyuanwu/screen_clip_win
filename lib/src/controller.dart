@@ -183,7 +183,10 @@ class ClipController extends ChangeNotifier {
     }
   }
 
-  Future<void> setLaunchAtLogin(bool enabled) async {
+  Future<void> setLaunchAtLogin(
+    bool enabled, {
+    bool openSettings = false,
+  }) async {
     if (startupBusy) return;
     startupBusy = true;
     error = null;
@@ -195,6 +198,13 @@ class ClipController extends ChangeNotifier {
     } catch (e) {
       error = '开机启动设置失败：$e';
     } finally {
+      if (enabled && openSettings) {
+        try {
+          await bridge.openLoginItems();
+        } catch (_) {
+          error = '无法打开系统登录项，请前往系统设置 → 通用 → 登录项，允许定格T启动';
+        }
+      }
       startupBusy = false;
       changed();
     }

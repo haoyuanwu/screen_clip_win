@@ -100,6 +100,9 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
           try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
           result(directory.path)
         } catch { result(FlutterError(code: "storage", message: error.localizedDescription, details: nil)) }
+      case "openLoginItems":
+        SMAppService.openSystemSettingsLoginItems()
+        result(nil)
       case "launchAtLoginStatus", "setLaunchAtLogin":
         do {
           let service = SMAppService.mainApp

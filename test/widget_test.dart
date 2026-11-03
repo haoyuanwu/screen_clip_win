@@ -23,6 +23,12 @@ class FakeBridge extends DesktopBridge {
   Future<Map<Object?, Object?>?> focusCaptureWindow(int index) async => null;
   bool startupEnabled = false, failStartup = false;
   int startupWrites = 0;
+  int loginItemsOpened = 0;
+  @override
+  Future<void> openLoginItems() async {
+    loginItemsOpened++;
+  }
+
   @override
   Future<String> launchAtLoginStatus() async =>
       startupEnabled ? 'enabled' : 'disabled';
@@ -140,6 +146,7 @@ void main() {
         expect(first.ready, isTrue);
         expect(first.launchAtLogin, isTrue);
         expect(bridge.startupWrites, 1);
+        expect(bridge.loginItemsOpened, 0);
         await first.setLaunchAtLogin(false);
         expect(first.launchAtLogin, isFalse);
         first.dispose();
@@ -147,8 +154,14 @@ void main() {
         await next.initialize();
         expect(next.launchAtLogin, isFalse);
         expect(bridge.startupWrites, 2);
+        await next.setLaunchAtLogin(true, openSettings: true);
+        expect(next.launchAtLogin, true);
+        expect(bridge.loginItemsOpened, 1);
+        await next.setLaunchAtLogin(false);
+        expect(bridge.loginItemsOpened, 1);
         bridge.failStartup = true;
-        await next.setLaunchAtLogin(true);
+        await next.setLaunchAtLogin(true, openSettings: true);
+        expect(bridge.loginItemsOpened, 2);
         expect(next.launchAtLogin, isFalse);
         expect(next.ready, isTrue);
         expect(next.error, contains('开机启动设置失败'));

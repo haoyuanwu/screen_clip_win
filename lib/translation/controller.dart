@@ -16,11 +16,30 @@ class SecureChannelStorage implements ChannelStorage {
   // The non-sharing macOS Keychain works with locally signed desktop builds;
   // data-protection keychain would require a distribution provisioning profile.
   final FlutterSecureStorage _storage = const FlutterSecureStorage(
+    mOptions: MacOsOptions(
+      accountName: '定格T',
+      label: '定格T',
+      description: '定格T翻译渠道安全配置',
+      usesDataProtectionKeychain: false,
+    ),
+  );
+  final FlutterSecureStorage _legacyStorage = const FlutterSecureStorage(
     mOptions: MacOsOptions(usesDataProtectionKeychain: false),
   );
   static const _key = 'screenclip.translation.settings.v1';
   @override
-  Future<String?> read() => _storage.read(key: _key);
+  Future<String?> read() async {
+    final current = await _storage.read(key: _key);
+    if (current != null || defaultTargetPlatform != TargetPlatform.macOS) {
+      return current;
+    }
+    // Preserve existing credentials. Read/write failures propagate rather than
+    // treating denied access as an empty configuration and overwriting it.
+    final legacy = await _legacyStorage.read(key: _key);
+    if (legacy != null) await _storage.write(key: _key, value: legacy);
+    return legacy;
+  }
+
   @override
   Future<void> write(String value) => _storage.write(key: _key, value: value);
 }

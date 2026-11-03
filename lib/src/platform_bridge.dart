@@ -64,6 +64,7 @@ class DesktopBridge {
   static const channel = MethodChannel('screenclip/desktop');
   Future<String> launchAtLoginStatus() async =>
       await channel.invokeMethod<String>('launchAtLoginStatus') ?? 'disabled';
+  Future<void> openLoginItems() => channel.invokeMethod('openLoginItems');
   Future<String> setLaunchAtLogin(bool enabled) async =>
       await channel.invokeMethod<String>('setLaunchAtLogin', enabled) ??
       'disabled';
