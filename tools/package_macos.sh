@@ -118,7 +118,7 @@ elif [[ "$archs" == *arm64* ]]; then
 else
   platform="x64"
 fi
-dmg="$root/dist/定格-$version-macOS-$platform.dmg"
+dmg="$root/dist/DingGe-$version-macOS-$platform.dmg"
 test ! -e "$dmg"
 hdiutil create -volname "定格 $version" -srcfolder "$stage" -format UDZO -ov "$dmg"
 hdiutil verify "$dmg"
