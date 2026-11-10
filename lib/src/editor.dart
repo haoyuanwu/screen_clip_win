@@ -11,6 +11,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/cupertino.dart' show CupertinoIcons;
 
 import 'ui/controls.dart';
+import 'ui/scroll_capture.dart';
 import 'ui/toolbar_layout.dart';
 import 'ocr_selection.dart';
 import 'ui/ocr_overlay.dart';
@@ -683,6 +684,27 @@ class CaptureEditor extends StatefulWidget {
 }
 
 class _CaptureEditorState extends State<CaptureEditor> {
+  bool scrollCapturing = false;
+  Future<void> startScrollCapture() async {
+    if (locked || region == null || image == null) return;
+    final r = region!;
+    setState(() => rendering = true);
+    try {
+      await widget.controller.bridge.beginScrollCapture(r);
+      if (mounted) setState(() => scrollCapturing = true);
+    } catch (e) {
+      if (mounted) setState(() => loadError = '无法开始长截图：$e');
+    } finally {
+      if (mounted) setState(() => rendering = false);
+    }
+  }
+
+  Future<void> cancelScrollCapture() async {
+    // Cancel ends the entire capture session, just like Escape in the editor.
+    // Restoring the resized editor left stale selection/input state behind.
+    await widget.controller.discard();
+  }
+
   bool translationOpen = false;
   void closeTranslation() {
     widget.controller.translation.cancel();
@@ -3177,6 +3199,12 @@ class _CaptureEditorState extends State<CaptureEditor> {
             annotationButton(entry),
         ], divided: false),
         toolGroup('补充标注', [
+          ToolButton(
+            size: 28,
+            label: '长截图',
+            icon: CupertinoIcons.rectangle_expand_vertical,
+            onPressed: locked || region == null ? null : startScrollCapture,
+          ),
           annotationButton((MarkTool.line, CupertinoIcons.minus, '直线 · G')),
           annotationButton((MarkTool.number, CupertinoIcons.list_number, '序号')),
         ]),
@@ -3378,8 +3406,8 @@ class _CaptureEditorState extends State<CaptureEditor> {
           if (loadError != null || widget.controller.error != null)
             Padding(
               padding: const EdgeInsets.only(top: 4),
-              child: Text(
-                loadError ?? widget.controller.error!,
+              child: CopyableMessage(
+                message: loadError ?? widget.controller.error!,
                 style: TextStyle(color: cs.error, fontSize: 11),
               ),
             ),
@@ -3390,6 +3418,12 @@ class _CaptureEditorState extends State<CaptureEditor> {
 
   @override
   Widget build(BuildContext context) {
+    if (scrollCapturing) {
+      return ScrollCapture(
+        controller: widget.controller,
+        onCancel: cancelScrollCapture,
+      );
+    }
     return CallbackShortcuts(
       bindings: textAnchor != null || translationOpen
           ? {}
@@ -4234,7 +4268,13 @@ class _CaptureEditorState extends State<CaptureEditor> {
                     child: Material(
                       child: Padding(
                         padding: const EdgeInsets.all(16),
-                        child: Text(loadError!),
+                        child: SizedBox(
+                          width: math.min(
+                            480,
+                            MediaQuery.sizeOf(context).width - 48,
+                          ),
+                          child: CopyableMessage(message: loadError!),
+                        ),
                       ),
                     ),
                   ),

@@ -89,13 +89,13 @@ BEGIN
     BEGIN
         BLOCK "040904e4"
         BEGIN
-            VALUE "CompanyName", "定格T" "\0"
-            VALUE "FileDescription", "定格T" "\0"
+            VALUE "CompanyName", "定格" "\0"
+            VALUE "FileDescription", "定格" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
             VALUE "InternalName", "ScreenClip" "\0"
             VALUE "LegalCopyright", "Copyright (C) 2026 ScreenClip. All rights reserved." "\0"
-            VALUE "OriginalFilename", "screen_clip_win.exe" "\0"
-            VALUE "ProductName", "定格T" "\0"
+            VALUE "OriginalFilename", "定格.exe" "\0"
+            VALUE "ProductName", "定格" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

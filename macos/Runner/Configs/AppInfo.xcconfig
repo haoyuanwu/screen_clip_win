@@ -5,7 +5,9 @@
 // 'flutter create' template.
 
 // The application's name. By default this is also the title of the Flutter window.
-PRODUCT_NAME = screen_clip_win
+PRODUCT_NAME = 定格
+// Keep injected debug-library filenames ASCII for codesign resource validation.
+EXECUTABLE_NAME = DingGe
 
 // The application's bundle identifier
 PRODUCT_BUNDLE_IDENTIFIER = com.example.screenClipWin

@@ -540,3 +540,130 @@ class StateTransition extends StatelessWidget {
     );
   }
 }
+
+/// Error details may contain commands and paths; keep the complete text available.
+class CopyableMessage extends StatefulWidget {
+  const CopyableMessage({super.key, required this.message, this.style});
+  final String message;
+  final TextStyle? style;
+  @override
+  State<CopyableMessage> createState() => _CopyableMessageState();
+}
+
+class _CopyableMessageState extends State<CopyableMessage> {
+  bool copied = false;
+  @override
+  void didUpdateWidget(CopyableMessage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.message != widget.message) copied = false;
+  }
+
+  Future<void> copy() async {
+    final message = widget.message;
+    try {
+      await Clipboard.setData(ClipboardData(text: message));
+      if (mounted && message == widget.message) setState(() => copied = true);
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.maybeOf(context)
+            ?.showSnackBar(const SnackBar(content: Text('复制失败，请选中文字后复制')));
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Row(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Expanded(
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxHeight: (MediaQuery.sizeOf(context).height * .42).clamp(72, 240),
+          ),
+          child: SingleChildScrollView(
+            child: SelectableText(widget.message, style: widget.style),
+          ),
+        ),
+      ),
+      const SizedBox(width: 6),
+      ToolButton(
+        label: copied ? '已复制提示' : '复制提示',
+        icon: copied ? Icons.check_rounded : Icons.content_copy_rounded,
+        onPressed: copy,
+      ),
+    ],
+  );
+}
+
+/// Floats above the page without changing the page's available layout space.
+class FloatingErrorNotification extends StatelessWidget {
+  const FloatingErrorNotification({
+    super.key,
+    required this.message,
+    required this.onDismiss,
+  });
+  final String message;
+  final VoidCallback onDismiss;
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Semantics(
+      liveRegion: true,
+      child: Material(
+        type: MaterialType.transparency,
+        child: GlassPanel(
+          tintOpacity: 1,
+          padding: const EdgeInsets.all(14),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    width: 28,
+                    height: 28,
+                    decoration: BoxDecoration(
+                      color: cs.errorContainer,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Icon(
+                      Icons.error_outline_rounded,
+                      color: cs.onErrorContainer,
+                      size: 18,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      '操作未完成',
+                      style: TextStyle(
+                        color: cs.onSurface,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  ToolButton(
+                    label: '关闭提示',
+                    icon: Icons.close_rounded,
+                    onPressed: onDismiss,
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              CopyableMessage(
+                message: message,
+                style: TextStyle(
+                  color: cs.onSurface,
+                  fontSize: 12,
+                  height: 1.5,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}

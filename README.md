@@ -1,8 +1,8 @@
-# 定格T
+# 定格
 
 一款轻巧的常驻截图工具。没有主页，也不保存截图历史；框选、标注、复制，在同一个截图界面里完成。
 
-[下载 macOS Apple Silicon](https://github.com/haoyuanwu/screen_clip_win/releases/download/v1.1.4/ScreenClip-1.1.4-macOS-arm64.dmg) · [下载 macOS Intel](https://github.com/haoyuanwu/screen_clip_win/releases/download/v1.1.4/ScreenClip-1.1.4-macOS-x64.dmg) · [下载 Windows 安装版](https://github.com/haoyuanwu/screen_clip_win/releases/download/v1.1.1/ScreenClip-1.1.1-Windows-x64-Setup.exe) · [下载便携版](https://github.com/haoyuanwu/screen_clip_win/releases/download/v1.1.1/ScreenClip-1.1.1-Windows-x64-Portable.zip) · [查看发布版本](https://github.com/haoyuanwu/screen_clip_win/releases)
+[下载 macOS Apple Silicon](https://github.com/haoyuanwu/screen_clip_win/releases/download/v1.2.0/定格-1.2.0-macOS-arm64.dmg) · [历史 macOS Intel 1.1.4](https://github.com/haoyuanwu/screen_clip_win/releases/download/v1.1.4/ScreenClip-1.1.4-macOS-x64.dmg) · [下载 Windows 安装版](https://github.com/haoyuanwu/screen_clip_win/releases/download/v1.1.1/ScreenClip-1.1.1-Windows-x64-Setup.exe) · [下载便携版](https://github.com/haoyuanwu/screen_clip_win/releases/download/v1.1.1/ScreenClip-1.1.1-Windows-x64-Portable.zip) · [查看发布版本](https://github.com/haoyuanwu/screen_clip_win/releases)
 
 ## 截图，只需几步
 
@@ -13,6 +13,8 @@
 启动后驻留系统托盘，不弹出主页。按 **Esc** 取消截图，不改变剪贴板；需要文件时可主动保存 PNG。
 
 ## 功能
+
+- **长截图**：框选后开启，默认纵向，可切换横向；支持反复滚动拼接与去重、实时预览、速率警戒条和暂停位置标记。快速滚动时优先修正对齐，参考位置移出取景框或无法可靠匹配时暂停，滚回已采集区域自动恢复。连续滚动按选区尺寸刷新预览，停稳 300 毫秒补齐。取消会退出本次截图。
 
 - **图形标注**：方框、圆形和椭圆须拖动创建，忽略单击和微小误触；共用颜色与粗细设置，支持撤销／重做。截图选区始终为矩形。
 - **自适应工具栏**：宽度随内容调整，窄屏自动换行，始终保持在当前显示器内。
@@ -38,13 +40,13 @@
 
 ## 安装与使用
 
-**Windows 安装版**：下载 Setup.exe，运行安装向导，安装完成后启动定格T。
+**Windows 安装版**：下载 Setup.exe，运行安装向导，安装完成后启动定格。
 
-**Windows 便携版**：完整解压到固定目录，运行 `screen_clip_win.exe`。请勿直接在压缩包内运行；启用开机启动后请保持程序目录不变。
+**Windows 便携版**：完整解压到固定目录，运行 `screen_clip_win.exe`（历史 v1.1.1 包；新构建为 `定格.exe`）。请勿直接在压缩包内运行；启用开机启动后请保持程序目录不变。
 
 首次运行默认启用开机启动。看不到主窗口是正常现象，可从系统托盘或全局快捷键进入。升级前，请先从托盘退出旧版本。
 
-macOS v1.1.4 分别提供 Apple Silicon（arm64）和 Intel（x64）DMG，要求 macOS 14.0 及以上。打开后将“定格T.app”拖入 Applications，退出旧版本后再启动。此包使用本地临时签名，尚未经过 Apple Developer ID 签名与公证。首次截图或取色需要屏幕录制权限。
+后续 macOS 版本仅提供 Apple Silicon（arm64）DMG，不再打包 Intel。已发布的 v1.1.4 Intel 安装包保留。要求 macOS 14.0 及以上。打开后将“定格.app”拖入 Applications，退出旧版本后再启动。此包使用本地临时签名，尚未经过 Apple Developer ID 签名与公证。首次截图或取色需要屏幕录制权限。
 
 GitHub 上的 Windows 安装版和便携版目前仍为 v1.1.1。本地 Windows 已同步 v1.1.2 的 OCR、二维码、取色、图钉文字选择和编辑交互，并完成原生验证；预览包尚未上传发布。同步范围与验证记录见 [Windows 功能同步](docs/windows-sync.md)。
 
@@ -92,7 +94,7 @@ flutter build windows --release
 
 Windows 安装脚本为 `packaging/windows.iss`，使用 Inno Setup 编译。分发时需包含整个 Release 目录及匹配的 Microsoft Visual C++ 运行库。
 
-在 Mac 上可执行 `flutter run -d macos` 或 `flutter build macos --release`。已在 Apple Silicon 双屏环境检查截图、取色与启动流程；Intel 运行需要另行真机验证。
+在 Mac 上可执行 `flutter run -d macos` 或 `FLUTTER_MACOS_ARM64_ONLY=true flutter build macos --release`。已在 Apple Silicon 双屏环境检查截图、取色与启动流程；后续发布仅支持 Apple Silicon，使用 `tools/package_macos.sh VERSION` 打包。
 
 详细说明：[产品设计](docs/product-design.md)、[设计系统](design-system/screenclip/MASTER.md)、[发布说明](docs/releases/1.0.0.md)。
 

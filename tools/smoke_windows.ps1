@@ -1,4 +1,4 @@
-﻿param([string]$Executable = (Join-Path $PSScriptRoot '..\build\windows\x64\runner\Debug\screen_clip_win.exe'), [switch]$AllowParallel)
+﻿param([string]$Executable = (Join-Path $PSScriptRoot '..\build\windows\x64\runner\Debug\定格.exe'), [switch]$AllowParallel)
 $ErrorActionPreference = 'Stop'
 Add-Type -TypeDefinition @"
 using System;
@@ -59,7 +59,7 @@ public static class ClipSmoke {
 }
 "@
 $resolvedExecutable = (Resolve-Path -LiteralPath $Executable).Path
-if (-not $AllowParallel -and (Get-Process screen_clip_win -ErrorAction SilentlyContinue)) { throw 'Close the existing ScreenClip instance before running this smoke test.' }
+if (-not $AllowParallel -and (Get-Process 定格 -ErrorAction SilentlyContinue)) { throw 'Close the existing ScreenClip instance before running this smoke test.' }
 $originalCursor = New-Object ClipSmoke+CursorPoint
 [void][ClipSmoke]::GetCursorPos([ref]$originalCursor)
 $clipProcess = Start-Process -FilePath $resolvedExecutable -WindowStyle Hidden -PassThru

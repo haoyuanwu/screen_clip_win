@@ -17,9 +17,9 @@ class SecureChannelStorage implements ChannelStorage {
   // data-protection keychain would require a distribution provisioning profile.
   final FlutterSecureStorage _storage = const FlutterSecureStorage(
     mOptions: MacOsOptions(
-      accountName: '定格T',
-      label: '定格T',
-      description: '定格T翻译渠道安全配置',
+      accountName: '定格T', // Preserve access to existing Keychain entries.
+      label: '定格',
+      description: '定格翻译渠道安全配置',
       usesDataProtectionKeychain: false,
     ),
   );

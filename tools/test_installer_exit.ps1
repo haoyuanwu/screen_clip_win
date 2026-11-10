@@ -1,4 +1,4 @@
-param([string]$Executable = (Join-Path $PSScriptRoot '..\build\windows\x64\runner\Release\screen_clip_win.exe'))
+param([string]$Executable = (Join-Path $PSScriptRoot '..\build\windows\x64\runner\Release\定格.exe'))
 $ErrorActionPreference = 'Stop'
 Add-Type -TypeDefinition @"
 using System;

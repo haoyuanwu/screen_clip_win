@@ -18,7 +18,7 @@ try {
  foreach ($folder in @('OldInstall', 'Portable')) {
    $path = Join-Path $testRoot $folder
    Expand-Archive -LiteralPath (Resolve-Path -LiteralPath $LegacyPackage).Path -DestinationPath $path
-   $processes += Start-Process -FilePath (Join-Path $path 'screen_clip_win.exe') -WorkingDirectory $path -WindowStyle Hidden -PassThru
+   $processes += Start-Process -FilePath (Join-Path $path '定格.exe') -WorkingDirectory $path -WindowStyle Hidden -PassThru
  }
  Start-Sleep -Milliseconds 1700
  foreach ($app in $processes) { if ($app.HasExited) { throw 'Legacy test instance did not stay running.' } }
@@ -26,13 +26,13 @@ try {
  $rejected = Run-TestInstaller 'desktopicon' 'unchecked.log'
  if ($rejected -eq 0) { throw 'Installer unexpectedly proceeded with automatic exit unchecked.' }
  foreach ($app in $processes) { if ($app.HasExited) { throw 'Unchecked automatic exit still terminated an app.' } }
- if (Test-Path -LiteralPath (Join-Path $target 'screen_clip_win.exe')) { throw 'Installer wrote files before resolving running instances.' }
+ if (Test-Path -LiteralPath (Join-Path $target '定格.exe')) { throw 'Installer wrote files before resolving running instances.' }
  Write-Output 'PASS: unchecked automatic exit keeps both instances running and blocks installation.'
  $accepted = Run-TestInstaller 'closeapp' 'checked.log'
  if ($accepted -ne 0) { throw "Cross-directory installer failed: $accepted" }
  foreach ($app in $processes) { if (-not $app.WaitForExit(3000)) { throw 'A cross-directory instance was not closed.' } }
- $expected = (Get-FileHash -LiteralPath (Join-Path $projectRoot 'build\windows\x64\runner\Release\screen_clip_win.exe') -Algorithm SHA256).Hash
- $actual = (Get-FileHash -LiteralPath (Join-Path $target 'screen_clip_win.exe') -Algorithm SHA256).Hash
+ $expected = (Get-FileHash -LiteralPath (Join-Path $projectRoot 'build\windows\x64\runner\Release\定格.exe') -Algorithm SHA256).Hash
+ $actual = (Get-FileHash -LiteralPath (Join-Path $target '定格.exe') -Algorithm SHA256).Hash
  if ($expected -ne $actual) { throw 'Installed executable differs from current build.' }
  $log = Get-Content -LiteralPath (Join-Path $testRoot 'checked.log') -Raw
  if (($log | Select-String -Pattern 'Closing DingGeT PID' -AllMatches).Matches.Count -ne 2) { throw 'Installer did not log two verified exits.' }

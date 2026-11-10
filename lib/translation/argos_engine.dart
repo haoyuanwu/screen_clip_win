@@ -54,7 +54,7 @@ class ArgosEngine {
             macOS: Platform.isMacOS,
           );
       if (!await File(executablePath).exists()) {
-        throw const TranslationException('此安装包未包含本地翻译引擎，请安装带本地翻译的定格T');
+        throw const TranslationException('此安装包未包含本地翻译引擎，请安装带本地翻译的定格');
       }
       final data =
           directory ?? '${await DesktopBridge().dataDirectory()}/argos';

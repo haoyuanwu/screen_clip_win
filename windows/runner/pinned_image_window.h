@@ -51,7 +51,7 @@ class PinnedImageWindow {
     pin->target_ = pin->Fit(source);
     pin->current_ = animate ? pin->source_ : pin->target_;
     HWND hwnd = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
-        wc.lpszClassName, L"定格T · 图钉暂存", WS_POPUP, pin->current_.left, pin->current_.top, pin->current_.right-pin->current_.left, pin->current_.bottom-pin->current_.top, nullptr, nullptr, wc.hInstance, pin);
+        wc.lpszClassName, L"定格 · 图钉暂存", WS_POPUP, pin->current_.left, pin->current_.top, pin->current_.right-pin->current_.left, pin->current_.bottom-pin->current_.top, nullptr, nullptr, wc.hInstance, pin);
     if (!hwnd) { delete pin; return nullptr; }
     // WM_MOVE during CreateWindowEx updates current_; restore the intended frame
     // after applying the actual target monitor's DPI, including reduced motion.

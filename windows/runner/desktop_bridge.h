@@ -56,7 +56,17 @@ class DesktopBridge {
   LONG_PTR original_style = 0, original_exstyle = 0;
   bool capture_pending = false, was_visible = false;
   bool capture_frame_ready = false, capture_presentation_pending = false;
-  RECT selection{}, desktop{};
+  RECT selection{}, desktop{}, scroll_rect{};
+  bool scroll_capturing=false;
+  std::vector<HWND> scroll_borders;
+  HWND scroll_marker=nullptr, scroll_target=nullptr, scroll_marker_label=nullptr;
+  void ClearScrollCapture() {
+    scroll_capturing=false;SetWindowDisplayAffinity(owner,WDA_NONE);
+    for(HWND border:scroll_borders)DestroyWindow(border);
+    scroll_borders.clear();
+    for(HWND window:{scroll_marker,scroll_target,scroll_marker_label}) if(window)DestroyWindow(window);
+    scroll_marker=scroll_target=scroll_marker_label=nullptr;
+  }
   HBITMAP background = nullptr;
   std::unique_ptr<Result> pending;
   static constexpr UINT kTray = WM_APP + 71;
@@ -161,13 +171,95 @@ class DesktopBridge {
           HRGN rounded=CreateRoundRectRgn(0,0,width+1,height+1,static_cast<int>(32*dpi),static_cast<int>(32*dpi));
           if(rounded && !SetWindowRgn(owner,rounded,TRUE)) DeleteObject(rounded);
           ActivateSurface();result->Success();
+        } else if(method=="beginScrollCapture") {
+          const auto* args=std::get_if<flutter::EncodableMap>(call.arguments());
+          if(!args || !capture_surface) {result->Error("scroll","请先框选截图范围");return;}
+          auto number=[&](const char* key) {const auto& v=args->at(Value(key));return std::holds_alternative<double>(v)?std::get<double>(v):static_cast<double>(std::get<int32_t>(v));};
+          int x=static_cast<int>(number("x")),y=static_cast<int>(number("y"));
+          int w=static_cast<int>(number("width")),h=static_cast<int>(number("height"));
+          scroll_rect={desktop.left+x,desktop.top+y,desktop.left+x+w,desktop.top+y+h};
+          MONITORINFO info{sizeof(info)};GetMonitorInfo(MonitorFromRect(&scroll_rect,MONITOR_DEFAULTTONEAREST),&info);
+          RECT intersection{};IntersectRect(&intersection,&scroll_rect,&info.rcMonitor);
+          if(w<32 || h<32 || !EqualRect(&intersection,&scroll_rect)) {result->Error("scroll","请在同一显示器内框选至少 32 × 32 像素的区域");return;}
+          ClearScrollCapture();scroll_capturing=true;capture_presentation_pending=false;
+          const RECT borders[]={{scroll_rect.left-2,scroll_rect.top-2,scroll_rect.right+2,scroll_rect.top},
+            {scroll_rect.left-2,scroll_rect.bottom,scroll_rect.right+2,scroll_rect.bottom+2},
+            {scroll_rect.left-2,scroll_rect.top,scroll_rect.left,scroll_rect.bottom},
+            {scroll_rect.right,scroll_rect.top,scroll_rect.right+2,scroll_rect.bottom}};
+          for(const auto& r:borders) {
+            HWND border=CreateWindowExW(WS_EX_TOPMOST|WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE|WS_EX_TRANSPARENT|WS_EX_LAYERED,
+              L"STATIC",L"",WS_POPUP|SS_WHITERECT,r.left,r.top,r.right-r.left,r.bottom-r.top,owner,nullptr,GetModuleHandle(nullptr),nullptr);
+            if(border) {SetLayeredWindowAttributes(border,0,255,LWA_ALPHA);SetWindowDisplayAffinity(border,0x00000011);ShowWindow(border,SW_SHOWNOACTIVATE);scroll_borders.push_back(border);}
+          }
+          double dpi=GetDpiForWindow(owner)/96.0;
+          int pw=std::min(static_cast<int>(260*dpi),static_cast<int>(info.rcWork.right-info.rcWork.left));
+          int ph=std::min(static_cast<int>(640*dpi),static_cast<int>(info.rcWork.bottom-info.rcWork.top));
+          int right=info.rcWork.right-scroll_rect.right,left=scroll_rect.left-info.rcWork.left;
+          int px=right>=pw+12?scroll_rect.right+12:(left>=pw+12?scroll_rect.left-pw-12:(right>=left?info.rcWork.right-pw:info.rcWork.left));
+          SetWindowDisplayAffinity(owner,0x00000011 /* WDA_EXCLUDEFROMCAPTURE */);
+          SetWindowPos(owner,HWND_TOPMOST,px,std::clamp(scroll_rect.top,info.rcWork.top,info.rcWork.bottom-ph),pw,ph,SWP_NOACTIVATE);
+          // Release focus to the source application; scrolling inside the region
+          // reaches the original window because the overlay now occupies only the preview.
+          if(IsWindow(previous_foreground))SetForegroundWindow(previous_foreground);
+          result->Success();
+        } else if(method=="updateScrollCaptureMarker") {
+          const auto& args=std::get<flutter::EncodableMap>(*call.arguments());
+          const bool paused=std::get<bool>(args.at(Value("paused")));
+          if(!scroll_capturing || !paused) {
+            for(HWND window:{scroll_marker,scroll_target,scroll_marker_label})if(window)ShowWindow(window,SW_HIDE);
+            result->Success();return;
+          }
+          auto create=[&](HWND& window,DWORD style) {
+            if(window)return;
+            window=CreateWindowExW(WS_EX_TOPMOST|WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE|WS_EX_TRANSPARENT|WS_EX_LAYERED,
+              L"STATIC",L"",WS_POPUP|style,0,0,1,1,owner,nullptr,GetModuleHandle(nullptr),nullptr);
+            if(window){SetLayeredWindowAttributes(window,0,255,LWA_ALPHA);SetWindowDisplayAffinity(window,0x00000011);}
+          };
+          create(scroll_marker,SS_WHITERECT);create(scroll_target,SS_BLACKRECT);create(scroll_marker_label,SS_LEFT);
+          bool horizontal=std::get<bool>(args.at(Value("horizontal")));
+          const auto& value=args.at(Value("fraction"));
+          const auto* fraction=std::get_if<double>(&value);
+          double f=fraction?std::clamp(*fraction,.02,.98):.02;
+          int w=scroll_rect.right-scroll_rect.left,h=scroll_rect.bottom-scroll_rect.top;
+          auto line=[&](HWND window,double at) {
+            SetWindowPos(window,HWND_TOPMOST,scroll_rect.left+(horizontal?static_cast<int>(w*at):3),
+              scroll_rect.top+(horizontal?3:static_cast<int>(h*at)),horizontal?3:w-6,horizontal?h-6:3,SWP_NOACTIVATE|SWP_SHOWWINDOW);
+          };
+          line(scroll_target,.5);line(scroll_marker,f);
+          SetWindowTextW(scroll_marker_label,fraction?L"暂停位置：移动白线对齐中央基准线":L"暂停位置未匹配，请滚回已采集区域");
+          SetWindowPos(scroll_marker_label,HWND_TOPMOST,scroll_rect.left+6,scroll_rect.top+6,std::min(320,w-12),28,SWP_NOACTIVATE|SWP_SHOWWINDOW);
+          result->Success();
+        } else if(method=="scrollCaptureFrame") {
+          if(!scroll_capturing) {result->Error("scroll","长截图已结束");return;}
+          int w=scroll_rect.right-scroll_rect.left,h=scroll_rect.bottom-scroll_rect.top;
+          HDC screen=GetDC(nullptr),dc=CreateCompatibleDC(screen);
+          HBITMAP bitmap=CreateCompatibleBitmap(screen,w,h);
+          auto old=SelectObject(dc,bitmap);
+          BOOL ok=BitBlt(dc,0,0,w,h,screen,scroll_rect.left,scroll_rect.top,SRCCOPY|CAPTUREBLT);
+          SelectObject(dc,old);DeleteDC(dc);ReleaseDC(nullptr,screen);
+          if(!ok) {DeleteObject(bitmap);result->Error("scroll","无法读取截屏区域");return;}
+          Gdiplus::Bitmap image(bitmap,nullptr);
+          UINT size=0,count=0;Gdiplus::GetImageEncodersSize(&count,&size);std::vector<BYTE> buffer(size);
+          auto encoders=reinterpret_cast<Gdiplus::ImageCodecInfo*>(buffer.data());Gdiplus::GetImageEncoders(count,size,encoders);CLSID png{};
+          for(UINT i=0;i<count;i++)if(wcscmp(encoders[i].MimeType,L"image/png")==0)png=encoders[i].Clsid;
+          IStream* stream=nullptr;std::vector<uint8_t> bytes;
+          if(CreateStreamOnHGlobal(nullptr,TRUE,&stream)==S_OK && image.Save(stream,&png,nullptr)==Gdiplus::Ok) {
+            STATSTG stat{};stream->Stat(&stat,STATFLAG_NONAME);HGLOBAL memory=nullptr;GetHGlobalFromStream(stream,&memory);
+            auto data=static_cast<uint8_t*>(GlobalLock(memory));
+            if(data) {bytes.assign(data,data+stat.cbSize.QuadPart);GlobalUnlock(memory);}
+          }
+          if(stream)stream->Release();DeleteObject(bitmap);
+          if(bytes.empty())result->Error("scroll","图片编码失败");else result->Success(Value(bytes));
+        } else if(method=="endScrollCapture") {
+          ClearScrollCapture();Present("capture");result->Success();
         } else if(method=="captureFrameReady") {
           capture_frame_ready=true;
           if(capture_presentation_pending)Present("capture");
           result->Success();
         } else if(method=="copied") { tray.uFlags=NIF_TIP;wcscpy_s(tray.szTip,L"图片已复制到剪贴板 · Ctrl+Shift+X 再次截图");Shell_NotifyIconW(NIM_MODIFY,&tray);result->Success();
-        } else if(method=="dismiss") { capture_surface=false;color_surface=false;text_input_active=false;UpdateInputMode();capture_presentation_pending=false;capture_frame_ready=false;ShowWindow(owner,SW_HIDE);RestoreFocusedWindow();SetWindowPos(owner,HWND_NOTOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE); result->Success();
+        } else if(method=="dismiss") { ClearScrollCapture(); capture_surface=false;color_surface=false;text_input_active=false;UpdateInputMode();capture_presentation_pending=false;capture_frame_ready=false;ShowWindow(owner,SW_HIDE);RestoreFocusedWindow();SetWindowPos(owner,HWND_NOTOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE); result->Success();
         } else if(method=="capture") {
+          ClearScrollCapture();
           if(pending) {result->Error("busy","Capture already in progress");return;}
           RestoreFocusedWindow();refreshing_selection=false;
           capture_frame_ready=false;capture_presentation_pending=false;
@@ -319,8 +411,8 @@ class DesktopBridge {
     tray.cbSize=sizeof(tray);tray.hWnd=owner;tray.uID=71;tray.uFlags=NIF_MESSAGE|NIF_ICON|NIF_TIP;
     tray.uCallbackMessage=kTray;tray.hIcon=LoadIconW(GetModuleHandle(nullptr),MAKEINTRESOURCEW(101));
     if(!tray.hIcon) tray.hIcon=LoadIconW(nullptr,IDI_APPLICATION);
-    wcscpy_s(tray.szTip,L"定格T截图 | Ctrl+Shift+X");Shell_NotifyIconW(NIM_ADD,&tray);
-    tray.uFlags=NIF_INFO;wcscpy_s(tray.szInfoTitle,L"定格T已就绪");wcscpy_s(tray.szInfo,L"按 Ctrl+Shift+X 截图，右键托盘图标打开标注和设置。");tray.dwInfoFlags=NIIF_INFO;Shell_NotifyIconW(NIM_MODIFY,&tray);
+    wcscpy_s(tray.szTip,L"定格截图 | Ctrl+Shift+X");Shell_NotifyIconW(NIM_ADD,&tray);
+    tray.uFlags=NIF_INFO;wcscpy_s(tray.szInfoTitle,L"定格已就绪");wcscpy_s(tray.szInfo,L"按 Ctrl+Shift+X 截图，右键托盘图标打开标注和设置。");tray.dwInfoFlags=NIIF_INFO;Shell_NotifyIconW(NIM_MODIFY,&tray);
   }
   void ActivateSurface(int command=SW_SHOW) {
     ShowWindow(owner,command);SetForegroundWindow(owner);
@@ -331,6 +423,7 @@ class DesktopBridge {
     UpdateInputMode();
   }
   void Present(const std::string& panel) {
+    ClearScrollCapture();
     translation_surface=panel=="translation";
     if(!original_style){original_style=GetWindowLongPtr(owner,GWL_STYLE);original_exstyle=GetWindowLongPtr(owner,GWL_EXSTYLE);}
     color_surface=panel=="color";
@@ -367,7 +460,7 @@ class DesktopBridge {
   void Request(const std::string& value) {channel->InvokeMethod("captureRequested",std::make_unique<Value>(value));}
   bool Handle(UINT message, WPARAM wparam, LPARAM lparam) {
     if(message==WM_GETMINMAXINFO && !capture_surface && !color_surface) {auto info=reinterpret_cast<MINMAXINFO*>(lparam);double dpi=GetDpiForWindow(owner)/96.0;info->ptMinTrackSize={static_cast<LONG>(440*dpi),static_cast<LONG>((translation_surface?480:310)*dpi)};return true;}
-    if(message==WM_CLOSE) {channel->InvokeMethod("dismissed",nullptr);ShowWindow(owner,SW_HIDE);RestoreFocusedWindow();return true;}
+    if(message==WM_CLOSE) {ClearScrollCapture();channel->InvokeMethod("dismissed",nullptr);ShowWindow(owner,SW_HIDE);RestoreFocusedWindow();return true;}
     if(message==WM_HOTKEY && wparam==73) {Request("color");return true;}
     if(message==WM_HOTKEY && wparam==71) {Request("region");return true;}
     if(message==WM_TIMER && wparam==72 && capture_pending) {KillTimer(owner,72);capture_pending=false;BeginCapture();return true;}
@@ -376,7 +469,7 @@ class DesktopBridge {
       if(lparam==WM_RBUTTONUP || lparam==WM_CONTEXTMENU) {
         HMENU menu=CreatePopupMenu();
         AppendMenuW(menu,MF_STRING,1,L"区域截图    Ctrl+Shift+X");AppendMenuW(menu,MF_STRING,7,L"屏幕取色    Ctrl+Shift+C");AppendMenuW(menu,MF_STRING,2,L"窗口截图");AppendMenuW(menu,MF_STRING,3,L"全屏截图（全部显示器）");
-        AppendMenuW(menu,MF_SEPARATOR,0,nullptr);AppendMenuW(menu,MF_STRING,4,L"截图工具条");AppendMenuW(menu,MF_STRING,5,L"偏好设置");AppendMenuW(menu,MF_SEPARATOR,0,nullptr);AppendMenuW(menu,MF_STRING,6,L"退出定格T");
+        AppendMenuW(menu,MF_SEPARATOR,0,nullptr);AppendMenuW(menu,MF_STRING,4,L"截图工具条");AppendMenuW(menu,MF_STRING,5,L"偏好设置");AppendMenuW(menu,MF_SEPARATOR,0,nullptr);AppendMenuW(menu,MF_STRING,6,L"退出定格");
         POINT pt;GetCursorPos(&pt);before_tray=GetForegroundWindow();SetForegroundWindow(owner);int action=TrackPopupMenu(menu,TPM_RETURNCMD|TPM_RIGHTBUTTON,pt.x,pt.y,0,owner,nullptr);DestroyMenu(menu);PostMessage(owner,WM_NULL,0,0);
         if(action==1)Request("region");if(action==7)Request("color");if(action==2)Request("window");if(action==3)Request("screen");if(action==4)Open("palette");if(action==5)Open("settings");if(action==6)DestroyWindow(owner);
       } return true;

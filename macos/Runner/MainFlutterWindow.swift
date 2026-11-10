@@ -11,6 +11,10 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
   private var hotkey: EventHotKeyRef?
   private var colorHotkey: EventHotKeyRef?
   private var eventHandler: EventHandlerRef?
+  private var scrollCaptureFilter: SCContentFilter?
+  private var scrollCaptureRect: CGRect?
+  private var scrollCaptureScreen: NSScreen?
+  private var scrollCaptureBorder: NSPanel?
   private var capturedScreen: NSScreen?
   private var capturePixelWidth: CGFloat = 1
   private var captureWindows: [SCWindow] = []
@@ -76,7 +80,7 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
     }
     let controller = FlutterViewController()
     contentViewController = controller
-    title = "定格T"
+    title = "定格"
     minSize = NSSize(width: 440, height: 280)
     delegate = self
     isReleasedWhenClosed = false
@@ -141,7 +145,53 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
         }
       case "registerColorHotkey": result(self.setupColorHotkey())
       case "present": self.present(call.arguments as? String ?? "palette"); result(nil)
-      case "dismiss": self.clearCaptureMirrors(); self.clearCaptureCover(); self.captureFrameReady = false; self.orderOut(nil); self.captureBackground = nil; self.level = .normal; result(nil)
+      case "beginScrollCapture":
+        guard let args = call.arguments as? [String: Any],
+              let x = args["x"] as? Double, let y = args["y"] as? Double,
+              let w = args["width"] as? Double, let h = args["height"] as? Double,
+              let desktop = self.captureDesktop else {
+          result(FlutterError(code: "scroll", message: "请先框选截图范围", details: nil)); return
+        }
+        let scale = CGFloat(self.captureBackground?.width ?? 1) / desktop.frame.width
+        let region = CGRect(x: desktop.frame.minX + x / scale,
+          y: desktop.frame.maxY - (y + h) / scale, width: w / scale, height: h / scale)
+        guard w >= 32, h >= 32, let screen = NSScreen.screens.first(where: { $0.frame.contains(region) }) else {
+          result(FlutterError(code: "scroll", message: "请在同一显示器内框选至少 32 × 32 像素的区域", details: nil)); return
+        }
+        self.scrollCaptureRect = region; self.scrollCaptureScreen = screen
+        self.clearCaptureMirrors(); self.clearCaptureCover()
+        self.captureFrameReady = true
+        self.minSize = .zero
+        let work = screen.visibleFrame
+        let previewWidth = min(CGFloat(260), work.width)
+        let right = work.maxX - region.maxX, left = region.minX - work.minX
+        let px = right >= previewWidth + 12 ? region.maxX + 12 :
+          (left >= previewWidth + 12 ? region.minX - previewWidth - 12 :
+          (right >= left ? work.maxX - previewWidth : work.minX))
+        self.setFrame(CGRect(x: px, y: max(work.minY, min(region.maxY, work.maxY) - min(640, work.height)),
+          width: previewWidth, height: min(640, work.height)), display: true)
+        let border = NSPanel(contentRect: region.insetBy(dx: -2, dy: -2), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        border.isOpaque = false; border.backgroundColor = .clear; border.hasShadow = false
+        border.ignoresMouseEvents = true; border.level = .screenSaver
+        border.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        let outline = ScrollCaptureOutline(frame: CGRect(origin: .zero, size: border.frame.size))
+        outline.wantsLayer = true; outline.layer?.borderColor = NSColor.systemBlue.cgColor
+        outline.layer?.borderWidth = 2; border.contentView = outline
+        border.orderFrontRegardless(); self.scrollCaptureBorder = border
+        result(nil)
+      case "updateScrollCaptureMarker":
+        if let args = call.arguments as? [String: Any],
+           let outline = self.scrollCaptureBorder?.contentView as? ScrollCaptureOutline {
+          outline.paused = args["paused"] as? Bool ?? false
+          outline.horizontal = args["horizontal"] as? Bool ?? false
+          outline.fraction = args["fraction"] as? Double
+          outline.needsDisplay = true
+        }
+        result(nil)
+      case "scrollCaptureFrame": self.scrollCaptureFrame(result: result)
+      case "endScrollCapture":
+        self.clearScrollCapture(); self.present("capture"); result(nil)
+      case "dismiss": self.clearScrollCapture(); self.clearCaptureMirrors(); self.clearCaptureCover(); self.captureFrameReady = false; self.orderOut(nil); self.captureBackground = nil; self.level = .normal; result(nil)
       case "captureMirrorLayouts":
         result(["session": self.captureMirrorSession, "screens": self.captureMirrors.map { id, panel -> [String: Any] in
           let frame = panel.targetFrame, desktop = self.captureDesktop!.frame
@@ -272,7 +322,7 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
       case "save":
         guard let args = call.arguments as? [String: Any], let bytes = args["bytes"] as? FlutterStandardTypedData else { result(FlutterError(code: "image", message: "图片数据无效", details: nil)); return }
         let panel = NSSavePanel(); panel.allowedContentTypes = [.png]
-        panel.nameFieldStringValue = args["name"] as? String ?? "定格T.png"
+        panel.nameFieldStringValue = args["name"] as? String ?? "定格.png"
         let previousLevel = self.level; self.level = .normal
         self.captureMirrors.values.forEach { $0.level = .normal }
         panel.beginSheetModal(for: self) { response in
@@ -283,6 +333,7 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
           catch { result(FlutterError(code: "save", message: error.localizedDescription, details: nil)) }
         }
       case "permissions":
+        if !CGPreflightScreenCaptureAccess() { CGRequestScreenCaptureAccess() }
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") { NSWorkspace.shared.open(url) }; result(nil)
       case "revealApplication":
         NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
@@ -323,6 +374,7 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
     orderOut(nil)
   }
   private func present(_ panel: String) {
+    if panel != "capture" { clearScrollCapture() }
     if panel != "capture" { resumeCaptureAfterExternal = false }
     if panel == "color" {
       clearCaptureMirrors()
@@ -446,7 +498,7 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
       "scrollY": event.type == .scrollWheel ? -event.scrollingDeltaY : 0])
   }
   func windowDidMove(_ notification: Notification) {
-    guard isVisible, level == .screenSaver, styleMask.contains(.borderless),
+    guard scrollCaptureRect == nil, isVisible, level == .screenSaver, styleMask.contains(.borderless),
           let desktop = captureDesktop, frame != desktop.frame else { return }
     // With separate display Spaces, AppKit may asynchronously add the active
     // screen's origin after orderFront, even though setFrame reported success.
@@ -462,10 +514,10 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
     // hidden. Do not opt into Command-drag removal or quit-on-removal.
     item.behavior = []
     item.isVisible = true
-    let image = NSImage(systemSymbolName: "crop", accessibilityDescription: "定格T截图"); image?.isTemplate = true
-    item.button?.image = image; item.button?.toolTip = "定格T · Control + Shift + X"
+    let image = NSImage(systemSymbolName: "crop", accessibilityDescription: "定格截图"); image?.isTemplate = true
+    item.button?.image = image; item.button?.toolTip = "定格 · Control + Shift + X"
     let menu = NSMenu()
-    let actions: [(String, Selector)] = [("区域截图    ⌃⇧X", #selector(captureRegion)), ("屏幕取色    ⌃⇧C", #selector(captureColor)), ("窗口截图", #selector(captureWindow)), ("全屏截图（全部显示器）", #selector(captureScreen)), ("截图工具条", #selector(showPalette)), ("偏好设置…", #selector(showPreferences)), ("退出定格T", #selector(quit))]
+    let actions: [(String, Selector)] = [("区域截图    ⌃⇧X", #selector(captureRegion)), ("屏幕取色    ⌃⇧C", #selector(captureColor)), ("窗口截图", #selector(captureWindow)), ("全屏截图（全部显示器）", #selector(captureScreen)), ("截图工具条", #selector(showPalette)), ("偏好设置…", #selector(showPreferences)), ("退出定格", #selector(quit))]
     for (index, action) in actions.enumerated() {
       if index == 4 || index == 6 { menu.addItem(.separator()) }
       let entry = NSMenuItem(title: action.0, action: action.1, keyEquivalent: ""); entry.target = self; menu.addItem(entry)
@@ -533,8 +585,51 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
       }
     }
   }
+  private func clearScrollCapture() {
+    scrollCaptureFilter = nil
+    scrollCaptureRect = nil; scrollCaptureScreen = nil
+    scrollCaptureBorder?.orderOut(nil); scrollCaptureBorder = nil
+  }
+  private func scrollCaptureFrame(result: @escaping FlutterResult) {
+    guard let region = scrollCaptureRect, let screen = scrollCaptureScreen,
+          let desktop = captureDesktop, let background = captureBackground else {
+      result(FlutterError(code: "scroll", message: "长截图已结束", details: nil)); return
+    }
+    let scale = CGFloat(background.width) / desktop.frame.width
+    Task { @MainActor in
+      do {
+        let filter: SCContentFilter
+        if let cached = self.scrollCaptureFilter {
+          filter = cached
+        } else {
+          let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+          guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber,
+                let display = content.displays.first(where: { $0.displayID == number.uint32Value }) else {
+            throw NSError(domain: "ScreenClip", code: 3, userInfo: [NSLocalizedDescriptionKey: "显示器已断开"])
+          }
+          let apps = content.applications.filter { $0.processID == ProcessInfo.processInfo.processIdentifier }
+          filter = SCContentFilter(display: display, excludingApplications: apps, exceptingWindows: [])
+          if self.scrollCaptureRect == region { self.scrollCaptureFilter = filter }
+        }
+        let config = SCStreamConfiguration()
+        config.sourceRect = CGRect(x: region.minX - screen.frame.minX, y: screen.frame.maxY - region.maxY,
+          width: region.width, height: region.height)
+        config.width = Int((region.width * scale).rounded()); config.height = Int((region.height * scale).rounded())
+        config.showsCursor = false
+        let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+        guard let data = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else {
+          throw NSError(domain: "ScreenClip", code: 2, userInfo: [NSLocalizedDescriptionKey: "图片编码失败"])
+        }
+        result(FlutterStandardTypedData(bytes: data))
+      } catch { self.scrollCaptureFilter = nil; result(FlutterError(code: "scroll", message: error.localizedDescription, details: nil)) }
+    }
+  }
   private func capture(_ mode: String, result: @escaping FlutterResult) {
+    clearScrollCapture()
     guard !capturing else { result(FlutterError(code: "busy", message: "截图正在进行", details: nil)); return }
+    // Request explicitly from the app after the screenshot action. Installation
+    // alone does not register this build in the system privacy settings.
+    if !CGPreflightScreenCaptureAccess() { CGRequestScreenCaptureAccess() }
     capturing = true
     captureFrameReady = false
     cursorNudger = CursorPixelNudger()
@@ -611,7 +706,8 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
         let failure = error as NSError
         if failure.domain == SCStreamErrorDomain && failure.code == SCStreamError.Code.userDeclined.rawValue {
           let appPath = Bundle.main.bundleURL.path
-          result(FlutterError(code: "permission", message: "系统仍拒绝当前应用的屏幕录制访问。\n请在系统设置 → 隐私与安全性 → 屏幕与系统音频录制中开启「定格T」，然后从菜单栏选择退出并重新打开（只关闭窗口不会退出）。\n如果开关已经打开仍反复提示，请移除旧的「定格T」条目，再添加当前应用并重新授权。升级后的临时签名可能与旧授权不匹配。\n当前运行位置：\(appPath)", details: ["applicationPath": appPath]))
+          let bundleID = Bundle.main.bundleIdentifier ?? "com.example.screenClipWin"
+          result(FlutterError(code: "permission", message: "系统拒绝当前应用的屏幕录制访问。\n请在系统设置 → 隐私与安全性 → 屏幕与系统音频录制中开启「定格」，然后从菜单栏退出并重新打开。\n如果列表里没有应用，可点击 + 或将 Finder 中当前运行的 .app 拖入列表。\n若仍不出现，请完全退出应用，在终端执行以下命令后重新打开并截图授权：\ntccutil reset ScreenCapture \(bundleID)\n调试版反复失去授权时，请使用 tools/configure_macos_debug_signing.sh 配置稳定开发签名，再重新构建。\n当前运行位置：\(appPath)", details: ["applicationPath": appPath, "bundleIdentifier": bundleID]))
         } else {
           result(FlutterError(code: "capture", message: error.localizedDescription, details: nil))
         }
@@ -717,7 +813,7 @@ private class PinnedImagePanel: NSPanel, NSWindowDelegate {
                              y: min(max(source.minY + 12, work.minY), work.maxY - size.height), width: size.width, height: size.height)
     let origin = source
     super.init(contentRect: animate ? origin : destination, styleMask: [.borderless], backing: .buffered, defer: false)
-    title = "定格T · 图钉暂存"; isReleasedWhenClosed = false; delegate = self
+    title = "定格 · 图钉暂存"; isReleasedWhenClosed = false; delegate = self
     level = .floating; collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
     backgroundColor = .clear; isOpaque = false; hasShadow = true; hidesOnDeactivate = false
     contentView = PinnedImageView(frame: NSRect(origin: .zero, size: frame.size), image: image)
@@ -748,7 +844,7 @@ private class PinnedImagePanel: NSPanel, NSWindowDelegate {
 private class PinnedImageView: NSView {
   let image: NSImage
   private let header = NSVisualEffectView()
-  private let label = NSTextField(labelWithString: "定格T")
+  private let label = NSTextField(labelWithString: "定格")
   private let copyButton = NSButton()
   private let textButton = NSButton()
   private let closeButton = NSButton()
@@ -931,5 +1027,45 @@ private class PinnedImageView: NSView {
     let x = min(max(panel.frame.minX, work.minX), work.maxX - width)
     let y = min(max(panel.frame.minY, work.minY), work.maxY - height)
     panel.setFrame(NSRect(x: x, y: y, width: width, height: height), display: true)
+  }
+}
+
+/// Lives in the existing click-through border panel, excluded from capture.
+private class ScrollCaptureOutline: NSView {
+  override var isFlipped: Bool { true }
+  var paused = false, horizontal = false
+  var fraction: Double?
+  override func draw(_ dirtyRect: NSRect) {
+    super.draw(dirtyRect)
+    guard paused else { return }
+    let area = bounds.insetBy(dx: 3, dy: 3)
+    func line(_ fraction: CGFloat, color: NSColor, dashed: Bool) {
+      color.setStroke()
+      let path = NSBezierPath(); path.lineWidth = 2
+      if dashed { path.setLineDash([6, 4], count: 2, phase: 0) }
+      if horizontal {
+        let x = area.minX + area.width * fraction
+        path.move(to: NSPoint(x: x, y: area.minY)); path.line(to: NSPoint(x: x, y: area.maxY))
+      } else {
+        let y = area.minY + area.height * fraction
+        path.move(to: NSPoint(x: area.minX, y: y)); path.line(to: NSPoint(x: area.maxX, y: y))
+      }
+      path.stroke()
+    }
+    line(0.5, color: .white, dashed: true)
+    let visibleFraction = CGFloat(min(0.98, max(0.02, fraction ?? 0.02)))
+    line(visibleFraction, color: .systemOrange, dashed: false)
+    let text: String
+    if let fraction {
+      text = fraction >= 0 && fraction <= 1 ? "暂停内容 ━   目标位置 ┄" : "暂停位置在取景框外，请继续滚回"
+    } else { text = "暂停位置未匹配，请滚回已采集区域" }
+    let font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+    let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.white]
+    let width = min(area.width - 8, (text as NSString).size(withAttributes: attributes).width + 16)
+    guard width > 0 else { return }
+    let label = NSRect(x: area.minX + 4, y: area.minY + 6, width: width, height: 26)
+    NSColor.black.withAlphaComponent(0.88).setFill()
+    NSBezierPath(roundedRect: label, xRadius: 6, yRadius: 6).fill()
+    (text as NSString).draw(in: label.insetBy(dx: 8, dy: 5), withAttributes: attributes)
   }
 }

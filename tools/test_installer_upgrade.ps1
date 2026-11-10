@@ -7,9 +7,9 @@ $projectRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $testDirectory = Join-Path $projectRoot ('dist\installer-upgrade-test-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $testDirectory | Out-Null
 Expand-Archive -LiteralPath (Resolve-Path -LiteralPath $LegacyPackage).Path -DestinationPath $testDirectory
-$executable = Join-Path $testDirectory 'screen_clip_win.exe'
+$executable = Join-Path $testDirectory '定格.exe'
 $before = (Get-FileHash -LiteralPath $executable -Algorithm SHA256).Hash
-$expected = (Get-FileHash -LiteralPath (Join-Path $projectRoot 'build\windows\x64\runner\Release\screen_clip_win.exe') -Algorithm SHA256).Hash
+$expected = (Get-FileHash -LiteralPath (Join-Path $projectRoot 'build\windows\x64\runner\Release\定格.exe') -Algorithm SHA256).Hash
 if ($before -eq $expected) { throw 'Use an older package to verify legacy shutdown compatibility.' }
 $logPath = Join-Path $testDirectory 'installer.log'
 $app = Start-Process -FilePath $executable -WorkingDirectory $testDirectory -WindowStyle Hidden -PassThru

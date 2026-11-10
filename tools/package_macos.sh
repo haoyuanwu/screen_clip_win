@@ -2,24 +2,17 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
-version="${1:?Usage: tools/package_macos.sh VERSION [arm64|x64|all]}"
-target="${2:-all}"
-if [[ "$target" == all ]]; then
-  "$0" "$version" arm64
-  "$0" "$version" x64
-  (cd "$root/dist" && shasum -a 256 "ScreenClip-$version-macOS-arm64.dmg" "ScreenClip-$version-macOS-x64.dmg" > "SHA256SUMS-$version-macOS.txt")
-  exit 0
-fi
+version="${1:?Usage: tools/package_macos.sh VERSION [arm64]}"
+target="${2:-arm64}"
 case "$target" in
   arm64) arch=arm64 ;;
-  x64) arch=x86_64 ;;
-  *) printf 'Unsupported architecture: %s\n' "$target" >&2; exit 1 ;;
+  *) printf 'macOS releases support Apple Silicon (arm64) only: %s\n' "$target" >&2; exit 1 ;;
 esac
-source_app="$root/build/macos/Build/Products/Release/screen_clip_win.app"
+source_app="$root/build/macos/Build/Products/Release/定格.app"
 test -d "$source_app"
 mkdir -p "$root/dist"
 stage="$(mktemp -d "$root/dist/macos-$version.XXXXXX")"
-app="$stage/定格T.app"
+app="$stage/定格.app"
 ditto "$source_app" "$app"
 python3 - "$app" <<'PY'
 from pathlib import Path
@@ -31,11 +24,7 @@ for relative in ['Contents/Helpers/argos', 'Contents/Resources/argos']:
     if path.exists():
         shutil.rmtree(path)
 PY
-if [[ "$target" == arm64 ]]; then
-  helper_source="${ARGOS_HELPER_ARM64:-}"
-else
-  helper_source="${ARGOS_HELPER_X64:-}"
-fi
+helper_source="${ARGOS_HELPER_ARM64:-}"
 if [[ -n "$helper_source" ]]; then
   test -x "$helper_source/screenclip_argos"
   ditto "$helper_source" "$app/Contents/Helpers/argos"
@@ -51,6 +40,8 @@ from pathlib import Path
 import subprocess
 import sys
 import os
+import shutil
+import plistlib
 
 app = Path(sys.argv[1])
 # Keep Python data out of the code-only Helpers signing location.
@@ -63,6 +54,31 @@ for name in ['licenses', 'NOTICE.md']:
     source = app / 'Contents/Helpers/argos' / name
     if source.exists():
         source.rename(helper_data / name)
+# Some previously built PyInstaller helpers dereferenced framework symlinks.
+# Restore the canonical versioned bundle layout before signing nested code.
+for framework in helper_data.rglob('*.framework'):
+    versions = framework / 'Versions'
+    current = versions / 'Current'
+    if not versions.is_dir() or current.is_symlink():
+        continue
+    candidates = [p for p in versions.iterdir() if p.is_dir() and p.name != 'Current']
+    if len(candidates) != 1:
+        raise RuntimeError(f'Ambiguous framework versions: {framework}')
+    version = candidates[0]
+    info = plistlib.loads((version / 'Resources/Info.plist').read_bytes())
+    executable = info['CFBundleExecutable']
+    if current.exists():
+        shutil.rmtree(current)
+    current.symlink_to(version.name)
+    for name in [executable, 'Resources']:
+        entry = framework / name
+        if entry.is_symlink():
+            continue
+        if entry.is_dir():
+            shutil.rmtree(entry)
+        elif entry.exists():
+            entry.unlink()
+        entry.symlink_to(f'Versions/Current/{name}')
 # Thin every Mach-O file, including Flutter, plugins and bundled native libraries.
 magics = {b'\xca\xfe\xba\xbe', b'\xbe\xba\xfe\xca', b'\xca\xfe\xba\xbf', b'\xbf\xba\xfe\xca',
           b'\xcf\xfa\xed\xfe', b'\xfe\xed\xfa\xcf', b'\xce\xfa\xed\xfe', b'\xfe\xed\xfa\xce'}
@@ -94,7 +110,7 @@ subprocess.run(['codesign', '--force', '--sign', '-', '--entitlements', sys.argv
 subprocess.run(['codesign', '--verify', '--deep', '--strict', str(app)], check=True)
 PY
 
-archs="$(lipo -archs "$app/Contents/MacOS/screen_clip_win")"
+archs="$(lipo -archs "$app/Contents/MacOS/DingGe")"
 if [[ "$archs" == *arm64* && "$archs" == *x86_64* ]]; then
   platform="Universal"
 elif [[ "$archs" == *arm64* ]]; then
@@ -102,9 +118,9 @@ elif [[ "$archs" == *arm64* ]]; then
 else
   platform="x64"
 fi
-dmg="$root/dist/ScreenClip-$version-macOS-$platform.dmg"
+dmg="$root/dist/定格-$version-macOS-$platform.dmg"
 test ! -e "$dmg"
-hdiutil create -volname "定格T $version" -srcfolder "$stage" -format UDZO -ov "$dmg"
+hdiutil create -volname "定格 $version" -srcfolder "$stage" -format UDZO -ov "$dmg"
 hdiutil verify "$dmg"
 (cd "$root/dist" && shasum -a 256 "$(basename "$dmg")" > "SHA256SUMS-$version-macOS-$platform.txt")
 printf 'DMG: %s\nArchitecture: %s\n' "$dmg" "$archs"

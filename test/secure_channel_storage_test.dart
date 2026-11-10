@@ -39,7 +39,7 @@ void main() {
     await SecureChannelStorage().write('synthetic config');
     final options = (calls.single.arguments as Map)['options'] as Map;
     expect(options['accountName'], '定格T');
-    expect(options['label'], '定格T');
+    expect(options['label'], '定格');
   });
   test(
     'Existing credentials migrate once without deleting the old entry',

@@ -202,7 +202,7 @@ class ClipController extends ChangeNotifier {
         try {
           await bridge.openLoginItems();
         } catch (_) {
-          error = '无法打开系统登录项，请前往系统设置 → 通用 → 登录项，允许定格T启动';
+          error = '无法打开系统登录项，请前往系统设置 → 通用 → 登录项，允许定格启动';
         }
       }
       startupBusy = false;
@@ -210,7 +210,10 @@ class ClipController extends ChangeNotifier {
     }
   }
 
-  Future<void> perform(Future<void> Function() operation) async {
+  Future<void> perform(
+    Future<void> Function() operation, {
+    bool presentOnError = true,
+  }) async {
     if (busy) return;
     busy = true;
     error = null;
@@ -223,10 +226,10 @@ class ClipController extends ChangeNotifier {
         sampledColor = null;
         panel = 'palette';
       }
-      await bridge.present(panel);
+      if (presentOnError) await bridge.present(panel);
     } catch (e) {
       error = '操作未完成：$e';
-      await bridge.present(panel);
+      if (presentOnError) await bridge.present(panel);
     } finally {
       busy = false;
       countdown = 0;
@@ -396,10 +399,11 @@ class ClipController extends ChangeNotifier {
   Future<void> finish(
     Uint8List bytes, {
     required bool save,
+    bool presentOnError = true,
   }) => perform(() async {
     if (save) {
       final name =
-          '定格T-${DateTime.now().toIso8601String().replaceAll(':', '-').split('.').first}.png';
+          '定格-${DateTime.now().toIso8601String().replaceAll(':', '-').split('.').first}.png';
       if (await bridge.save(bytes, name) == null) return;
     } else {
       await bridge.copy(bytes);
@@ -408,7 +412,7 @@ class ClipController extends ChangeNotifier {
       } catch (_) {}
     }
     await discard();
-  });
+  }, presentOnError: presentOnError);
   @override
   void dispose() {
     translation.dispose();

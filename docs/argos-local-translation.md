@@ -20,7 +20,7 @@ python tools/argos/build.py --destination build/windows/x64/runner/Release/argos
 python tools/argos/smoke.py --worker build/windows/x64/runner/Release/argos/screenclip_argos.exe --data-dir build/argos-models --download
 ```
 
-macOS：分别在 arm64 和 x86_64 Python 环境中运行，不能使用 Windows 构建交叉打包。
+macOS：后续发布仅使用 arm64 Python 环境，不再构建 Intel 引擎，不能使用 Windows 构建交叉打包。
 ```
 python3 tools/argos/build.py --destination build/argos-helper
 python3 tools/argos/smoke.py --worker build/argos-helper/screenclip_argos --data-dir build/argos-models --download
@@ -28,7 +28,7 @@ python3 tools/argos/smoke.py --worker build/argos-helper/screenclip_argos --data
 
 macOS 的 Flutter/Xcode 正常构建也会将引擎放入 `Contents/Helpers/argos` 并签署沙盒继承权限，不再只有 DMG 打包包含引擎。首次构建需要 Python 3.12 与联网安装引擎依赖；可用 `ARGOS_BUILD_PYTHON` 指定 Python，后续复用 `build/argos-helper`，引擎源码或依赖变化时重新构建。HTTPS 根证书随引擎打包，不依赖构建电脑的证书路径。
 
-macOS 打包脚本检查所有 Mach-O 的目标架构、签名嵌套二进制，再给 helper 签署沙盒继承权限；不关闭应用沙盒。需要分别提供已验收的辅助进程目录时使用 `ARGOS_HELPER_ARM64` 和 `ARGOS_HELPER_X64` 环境变量。完整 macOS 应用还需在本机验收沙盒内启动、下载、实际翻译与取消，单独运行 helper 不能代替这项检查。
+macOS 打包脚本检查所有 Mach-O 的目标架构、签名嵌套二进制，再给 helper 签署沙盒继承权限；不关闭应用沙盒。提供已验收的辅助进程目录时使用 `ARGOS_HELPER_ARM64` 环境变量。完整 macOS 应用还需在本机验收沙盒内启动、下载、实际翻译与取消，单独运行 helper 不能代替这项检查。
 
 Windows 打包脚本构建 helper 并带入安装包及便携包。未包含 helper 的开发构建在设置中显示明确提示，不静默回退到云端。
 

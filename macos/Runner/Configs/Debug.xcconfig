@@ -1,2 +1,6 @@
 #include "../../Flutter/Flutter-Debug.xcconfig"
 #include "Warnings.xcconfig"
+
+// Stable local signing keeps screen-recording grants valid across rebuilds.
+SCREEN_CLIP_DEBUG_SIGNING_IDENTITY = -
+#include? "Signing.local.xcconfig"

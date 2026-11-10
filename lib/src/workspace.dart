@@ -47,93 +47,81 @@ class Workspace extends StatelessWidget {
             child: SafeArea(
               top: c.panel != 'capture',
               bottom: c.panel != 'capture',
-              child: Column(
+              child: Stack(
+                fit: StackFit.expand,
                 children: [
+                  AnimatedSwitcher(
+                    reverseDuration: Duration.zero,
+                    duration:
+                        (MediaQuery.disableAnimationsOf(context) ||
+                            c.panel == 'capture' ||
+                            c.panel == 'color')
+                        ? Duration.zero
+                        : const Duration(milliseconds: 170),
+                    switchInCurve: Curves.easeOutCubic,
+                    switchOutCurve: Curves.easeIn,
+                    child: c.panel == 'capture' && c.clip != null
+                        ? CaptureEditor(
+                            key: ValueKey(c.revision),
+                            clip: c.clip!,
+                            controller: c,
+                          )
+                        : c.panel == 'color' && c.sampledColor != null
+                        ? Platform.isWindows
+                              ? FixedColorPreview(
+                                  sample: c.sampledColor!,
+                                  onClose: c.discard,
+                                  onResample: () => c.capture('color'),
+                                  onSizeChanged: (size) {
+                                    c.bridge
+                                        .resizeColorCard(size)
+                                        .catchError((Object _) {});
+                                  },
+                                )
+                              : Padding(
+                                  padding: const EdgeInsets.all(10),
+                                  child: Center(
+                                    child: ColorPreviewCard(
+                                      sample: c.sampledColor!,
+                                      fixed: true,
+                                      onClose: c.discard,
+                                      onResample: () => c.capture('color'),
+                                    ),
+                                  ),
+                                )
+                        : c.panel == 'translation'
+                        ? TranslationPanel(
+                            controller: c.translation,
+                            settingsInitially: c.translationSettingsInitially,
+                            onClose: c.closeTranslation,
+                            openUrl: c.bridge.openServiceUrl,
+                          )
+                        : c.panel == 'settings'
+                        ? Preferences(
+                            key: const ValueKey('settings'),
+                            controller: c,
+                          )
+                        : CaptureStrip(
+                            key: const ValueKey('palette'),
+                            controller: c,
+                          ),
+                  ),
                   if (c.error != null && c.panel != 'capture')
-                    Padding(
-                      padding: const EdgeInsets.all(12),
-                      child: GlassPanel(
-                        child: Row(
-                          children: [
-                            Expanded(
-                              child: Text(
-                                c.error!,
-                                style: TextStyle(
-                                  color: Theme.of(context).colorScheme.error,
-                                  fontSize: 12,
-                                ),
-                              ),
-                            ),
-                            ToolButton(
-                              label: '关闭提示',
-                              icon: CupertinoIcons.xmark,
-                              onPressed: () {
-                                c.error = null;
-                                c.changed();
-                              },
-                            ),
-                          ],
-                        ),
+                    Positioned(
+                      top: 12,
+                      right: 12,
+                      width: (MediaQuery.sizeOf(context).width - 24).clamp(
+                        0,
+                        460,
+                      ),
+                      child: FloatingErrorNotification(
+                        message: c.error!,
+                        onDismiss: () {
+                          c.error = null;
+                          c.changed();
+                        },
                       ),
                     ),
-                  Expanded(
-                    child: AnimatedSwitcher(
-                      reverseDuration: Duration.zero,
-                      duration:
-                          (MediaQuery.disableAnimationsOf(context) ||
-                              c.panel == 'capture' ||
-                              c.panel == 'color')
-                          ? Duration.zero
-                          : const Duration(milliseconds: 170),
-                      switchInCurve: Curves.easeOutCubic,
-                      switchOutCurve: Curves.easeIn,
-                      child: c.panel == 'capture' && c.clip != null
-                          ? CaptureEditor(
-                              key: ValueKey(c.revision),
-                              clip: c.clip!,
-                              controller: c,
-                            )
-                          : c.panel == 'color' && c.sampledColor != null
-                          ? Platform.isWindows
-                                ? FixedColorPreview(
-                                    sample: c.sampledColor!,
-                                    onClose: c.discard,
-                                    onResample: () => c.capture('color'),
-                                    onSizeChanged: (size) {
-                                      c.bridge
-                                          .resizeColorCard(size)
-                                          .catchError((Object _) {});
-                                    },
-                                  )
-                                : Padding(
-                                    padding: const EdgeInsets.all(10),
-                                    child: Center(
-                                      child: ColorPreviewCard(
-                                        sample: c.sampledColor!,
-                                        fixed: true,
-                                        onClose: c.discard,
-                                        onResample: () => c.capture('color'),
-                                      ),
-                                    ),
-                                  )
-                          : c.panel == 'translation'
-                          ? TranslationPanel(
-                              controller: c.translation,
-                              settingsInitially: c.translationSettingsInitially,
-                              onClose: c.closeTranslation,
-                              openUrl: c.bridge.openServiceUrl,
-                            )
-                          : c.panel == 'settings'
-                          ? Preferences(
-                              key: const ValueKey('settings'),
-                              controller: c,
-                            )
-                          : CaptureStrip(
-                              key: const ValueKey('palette'),
-                              controller: c,
-                            ),
-                    ),
-                  ),
                 ],
               ),
             ),
@@ -168,7 +156,7 @@ class CaptureStrip extends StatelessWidget {
                 Icon(CupertinoIcons.crop, color: cs.primary, size: 21),
                 const SizedBox(width: 10),
                 const Text(
-                  '定格T',
+                  '定格',
                   style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
                 ),
                 const SizedBox(width: 8),
@@ -478,8 +466,8 @@ class Preferences extends StatelessWidget {
                       Text(
                         c.launchAtLoginStatus == 'requiresApproval'
                             ? (Platform.isMacOS
-                                  ? '请在系统登录项中允许定格T启动'
-                                  : '请在系统启动应用中允许定格T启动')
+                                  ? '请在系统登录项中允许定格启动'
+                                  : '请在系统启动应用中允许定格启动')
                             : '登录后驻留托盘，随时截图',
                         style: TextStyle(
                           fontSize: 11,

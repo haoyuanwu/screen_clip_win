@@ -33,7 +33,7 @@ class _ScreenClipAppState extends State<ScreenClipApp> {
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: controller,
     builder: (context, _) => MaterialApp(
-      title: '定格T',
+      title: '定格',
       debugShowCheckedModeBanner: false,
       themeMode: controller.themeMode,
       theme: screenClipTheme(Brightness.light),

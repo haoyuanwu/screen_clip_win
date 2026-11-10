@@ -70,6 +70,23 @@ class DesktopBridge {
       'disabled';
   Future<String> dataDirectory() async =>
       (await channel.invokeMethod<String>('dataDirectory'))!;
+  Future<void> beginScrollCapture(Rect rect) => channel.invokeMethod<void>(
+    'beginScrollCapture',
+    {'x': rect.left, 'y': rect.top, 'width': rect.width, 'height': rect.height},
+  );
+  Future<Uint8List> scrollCaptureFrame() async =>
+      (await channel.invokeMethod<Uint8List>('scrollCaptureFrame'))!;
+  Future<void> updateScrollCaptureMarker({
+    required bool paused,
+    required bool horizontal,
+    double? fraction,
+  }) => channel.invokeMethod<void>('updateScrollCaptureMarker', {
+    'paused': paused,
+    'horizontal': horizontal,
+    'fraction': fraction,
+  });
+  Future<void> endScrollCapture() =>
+      channel.invokeMethod<void>('endScrollCapture');
   Future<Map<Object?, Object?>?> capture(String mode) =>
       channel.invokeMapMethod<Object?, Object?>('capture', mode);
   Future<Map<Object?, Object?>?> focusCaptureWindow(int index) =>

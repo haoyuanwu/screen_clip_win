@@ -1,5 +1,6 @@
 """Build on each target OS/architecture. No cross compilation or model bundling."""
 import argparse
+import json
 import platform
 from pathlib import Path
 import shutil
@@ -19,15 +20,31 @@ if not env.exists():
     venv.create(env, with_pip=True)
 python = env / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
 subprocess.run([str(python), "-m", "pip", "install", "-r", str(ROOT / "tools/argos/requirements.txt")], check=True)
+vendor = subprocess.check_output([str(python), '-c',
+    'import pathlib,setuptools; print(pathlib.Path(setuptools.__file__).parent / "_vendor")'], text=True).strip()
 subprocess.run([str(python), "-m", "PyInstaller", "--noconfirm", "--clean", "--onedir",
+    # setuptools' vendored jaraco imports backports by its top-level name on
+    # Python < 3.12. Expose the already bundled vendor tree to analysis.
+    "--paths", vendor,
+    "--hidden-import", "backports.tarfile",
     "--name", "screenclip_argos", "--distpath", str(ROOT / "build/argos-dist"),
     "--workpath", str(ROOT / "build/argos-pyinstaller"), "--specpath", str(ROOT / "build"),
     "--collect-all", "ctranslate2", "--collect-all", "sentencepiece", "--collect-data", "certifi",
     "--copy-metadata", "ctranslate2", "--copy-metadata", "sentencepiece",
     str(ROOT / "tools/argos/worker.py")], check=True)
 source = ROOT / "build/argos-dist/screenclip_argos"
+# Probe before copying: packaging success alone does not prove it can start.
+probe = subprocess.run([str(source / ("screenclip_argos.exe" if sys.platform == "win32" else "screenclip_argos")),
+    "--data-dir", str(ROOT / "build/argos-smoke-data")], input='{"command":"status"}',
+    text=True, capture_output=True, timeout=30)
+if probe.returncode != 0 or not probe.stdout.strip() or json.loads(probe.stdout.splitlines()[-1]).get('event') != 'result':
+    raise RuntimeError(f"Argos startup probe failed: {probe.stderr} {probe.stdout}")
+# Replace old cached output only after the fresh helper passed its probe.
+# Dereferenced framework copies from older builds conflict with symlink copies.
+if args.destination.exists():
+    shutil.rmtree(args.destination)
 args.destination.mkdir(parents=True, exist_ok=True)
-shutil.copytree(source, args.destination, dirs_exist_ok=True)
+shutil.copytree(source, args.destination, dirs_exist_ok=True, symlinks=True)
 shutil.copy2(ROOT / "tools/argos/NOTICE.md", args.destination / "NOTICE.md")
 # Copy license texts explicitly: metadata files alone may omit wheel licenses.
 script = """import importlib.metadata as m, pathlib, shutil, sys

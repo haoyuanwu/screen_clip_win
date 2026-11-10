@@ -52,3 +52,6 @@ app.*.map.json
 
 # Existing nested repository checkout
 /screen_clip_win/
+
+# Machine-specific macOS development signing identity
+/macos/Runner/Configs/Signing.local.xcconfig
