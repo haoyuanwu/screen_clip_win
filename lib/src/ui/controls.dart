@@ -1,9 +1,10 @@
 import 'dart:math' as math;
-import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show RenderWrap;
 import 'package:flutter/services.dart';
+
+import '../theme.dart';
 
 /// Wrap's default intrinsic width omits spacing. Include it when a toolbar
 /// measures its natural width, so the final control is not forced to wrap.
@@ -42,59 +43,52 @@ class _ToolbarRenderWrap extends RenderWrap {
       math.max(0, childCount - 1) * spacing;
 }
 
-class GlassPanel extends StatelessWidget {
-  const GlassPanel({
+class FlatPanel extends StatelessWidget {
+  const FlatPanel({
     super.key,
     required this.child,
     this.padding = const EdgeInsets.all(10),
-    this.tintOpacity,
+    this.color,
     this.shadow = true,
+    this.floating = true,
   });
+
   final Widget child;
   final EdgeInsets padding;
-  final double? tintOpacity;
-  final bool shadow;
+  final Color? color;
+  final bool shadow, floating;
+
+  @override
+  Widget build(BuildContext context) => DecoratedBox(
+    decoration: AppStyle.panel(
+      context,
+      color: color,
+      shadow: shadow,
+      floating: floating,
+    ),
+    child: Padding(padding: padding, child: child),
+  );
+}
+
+/// A short reveal for panels that open without moving the primary actions.
+class PanelReveal extends StatelessWidget {
+  const PanelReveal({super.key, required this.child});
+  final Widget child;
+
   @override
   Widget build(BuildContext context) {
-    final dark = Theme.of(context).brightness == Brightness.dark;
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: shadow
-            ? [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: .16),
-                  blurRadius: 24,
-                  offset: const Offset(0, 8),
-                ),
-              ]
-            : const [],
-      ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(16),
-        child: BackdropFilter(
-          filter: ui.ImageFilter.blur(sigmaX: 24, sigmaY: 24),
-          child: Container(
-            padding: padding,
-            decoration: BoxDecoration(
-              color: (dark ? const Color(0xff262629) : const Color(0xfffafafa))
-                  .withValues(
-                    alpha: MediaQuery.highContrastOf(context)
-                        ? 1
-                        : tintOpacity ?? (dark ? .70 : .72),
-                  ),
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(
-                color: tintOpacity == null || MediaQuery.highContrastOf(context)
-                    ? (dark ? const Color(0xff555559) : const Color(0xffdedee2))
-                    : (dark ? Colors.white : Colors.black).withValues(
-                        alpha: dark ? .32 : .24,
-                      ),
-                width: .7,
-              ),
-            ),
-            child: child,
-          ),
+    final duration = AppStyle.motion(context, 180);
+    if (duration == Duration.zero) return child;
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 0, end: 1),
+      duration: duration,
+      curve: AppStyle.motionCurve,
+      child: child,
+      builder: (context, value, child) => Opacity(
+        opacity: value,
+        child: Transform.translate(
+          offset: Offset(0, 4 * (1 - value)),
+          child: child,
         ),
       ),
     );
@@ -113,7 +107,7 @@ class ToolbarInspectorSurface extends StatelessWidget {
       margin: const EdgeInsets.only(top: 6),
       padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(
-        color: cs.surface.withValues(alpha: .80),
+        color: cs.surfaceContainerLow,
         borderRadius: BorderRadius.circular(10),
         border: Border.all(color: cs.outlineVariant),
       ),
@@ -179,6 +173,7 @@ class ToolButton extends StatefulWidget {
     super.key,
     required this.label,
     this.icon,
+    this.title,
     this.child,
     this.onPressed,
     this.selected = false,
@@ -186,6 +181,7 @@ class ToolButton extends StatefulWidget {
     this.size = 32,
   });
   final String label;
+  final String? title;
   final IconData? icon;
   final Widget? child;
   final VoidCallback? onPressed;
@@ -235,15 +231,17 @@ class _ToolButtonState extends State<ToolButton> {
             onTapUp: (_) => setState(() => pressed = false),
             onTapCancel: () => setState(() => pressed = false),
             child: AnimatedScale(
-              scale: pressed ? .96 : 1,
-              duration: MediaQuery.disableAnimationsOf(context)
-                  ? Duration.zero
-                  : const Duration(milliseconds: 110),
-              curve: Curves.easeOutCubic,
+              scale:
+                  pressed &&
+                      widget.onPressed != null &&
+                      !MediaQuery.disableAnimationsOf(context)
+                  ? .97
+                  : 1,
+              duration: AppStyle.motion(context, 100),
+              curve: AppStyle.motionCurve,
               child: AnimatedContainer(
-                duration: MediaQuery.disableAnimationsOf(context)
-                    ? Duration.zero
-                    : const Duration(milliseconds: 100),
+                duration: AppStyle.motion(context, 140),
+                curve: AppStyle.motionCurve,
                 constraints: BoxConstraints(
                   minWidth: widget.size,
                   minHeight: widget.size,
@@ -258,43 +256,77 @@ class _ToolButtonState extends State<ToolButton> {
                 ),
                 decoration: BoxDecoration(
                   color: widget.primary
-                      ? c.primary
+                      ? (pressed || hover
+                            ? Color.alphaBlend(
+                                c.onPrimary.withValues(
+                                  alpha: pressed ? .18 : .10,
+                                ),
+                                c.primary,
+                              )
+                            : c.primary)
                       : widget.selected
                       ? c.primaryContainer
                       : pressed
-                      ? c.onSurface.withValues(alpha: .14)
+                      ? c.surfaceContainerHigh
                       : hover
-                      ? c.onSurface.withValues(alpha: .10)
+                      ? c.surfaceContainer
                       : Colors.transparent,
-                  borderRadius: BorderRadius.circular(8),
+                  borderRadius: BorderRadius.circular(AppStyle.controlRadius),
                   border: Border.all(
-                    color: focused || widget.selected
-                        ? c.primary
+                    color: focused
+                        ? (widget.primary ? c.onPrimary : c.primary)
+                        : widget.selected
+                        ? c.primary.withValues(alpha: .60)
                         : Colors.transparent,
-                    width: focused ? 2 : 1,
                   ),
                 ),
-                child: Opacity(
-                  opacity: widget.onPressed == null ? .42 : 1,
-                  child: IconTheme(
-                    data: IconThemeData(
-                      size: 18,
-                      color: widget.primary
-                          ? c.onPrimary
-                          : widget.selected
-                          ? c.onPrimaryContainer
-                          : c.onSurface,
-                    ),
-                    child: DefaultTextStyle(
-                      style: Theme.of(context).textTheme.bodySmall!.copyWith(
-                        fontSize: 12,
+                child: Align(
+                  alignment: Alignment.center,
+                  widthFactor: 1,
+                  heightFactor: 1,
+                  child: Opacity(
+                    opacity: widget.onPressed == null ? .42 : 1,
+                    child: IconTheme(
+                      data: IconThemeData(
+                        size: 18,
                         color: widget.primary
                             ? c.onPrimary
                             : widget.selected
                             ? c.onPrimaryContainer
                             : c.onSurface,
                       ),
-                      child: widget.child ?? Icon(widget.icon),
+                      child: DefaultTextStyle(
+                        style: Theme.of(context).textTheme.bodySmall!.copyWith(
+                          fontSize: 12,
+                          color: widget.primary
+                              ? c.onPrimary
+                              : widget.selected
+                              ? c.onPrimaryContainer
+                              : c.onSurface,
+                        ),
+                        child: widget.title == null
+                            ? widget.child ?? Icon(widget.icon)
+                            : Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  SizedBox(
+                                    width: 20,
+                                    height: widget.size < 30 ? 16 : 20,
+                                    child: Center(
+                                      child: widget.child ?? Icon(widget.icon),
+                                    ),
+                                  ),
+                                  SizedBox(height: widget.size < 30 ? 2 : 4),
+                                  Text(
+                                    widget.title!,
+                                    style: TextStyle(
+                                      fontSize: widget.size < 30 ? 9.5 : 11,
+                                      height: 1.1,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                      ),
                     ),
                   ),
                 ),
@@ -515,14 +547,14 @@ class StateTransition extends StatelessWidget {
   final Widget child;
   @override
   Widget build(BuildContext context) {
-    final reduced = MediaQuery.disableAnimationsOf(context);
-    if (reduced) return child;
+    final duration = AppStyle.motion(context, 190);
+    if (duration == Duration.zero) return child;
     return AnimatedSize(
-      duration: reduced ? Duration.zero : const Duration(milliseconds: 190),
-      curve: Curves.easeOutCubic,
+      duration: duration,
+      curve: AppStyle.motionCurve,
       alignment: Alignment.topCenter,
       child: AnimatedSwitcher(
-        duration: reduced ? Duration.zero : const Duration(milliseconds: 130),
+        duration: AppStyle.motion(context, 140),
         switchInCurve: Curves.easeOut,
         switchOutCurve: Curves.easeIn,
         transitionBuilder: (child, animation) => FadeTransition(
@@ -611,8 +643,7 @@ class FloatingErrorNotification extends StatelessWidget {
       liveRegion: true,
       child: Material(
         type: MaterialType.transparency,
-        child: GlassPanel(
-          tintOpacity: 1,
+        child: FlatPanel(
           padding: const EdgeInsets.all(14),
           child: Column(
             mainAxisSize: MainAxisSize.min,

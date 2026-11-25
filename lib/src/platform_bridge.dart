@@ -6,6 +6,13 @@ import 'qr_scan.dart';
 import 'ocr_selection.dart';
 
 class DesktopBridge {
+  Future<String?> recordingFolder({bool requestAccess = false}) =>
+      channel.invokeMethod<String>(
+        requestAccess ? 'ensureRecordingFolder' : 'recordingFolder',
+      );
+  Future<String?> chooseRecordingFolder() =>
+      channel.invokeMethod<String>('chooseRecordingFolder');
+
   Future<void> resizeColorCard(Size size) async {
     if (defaultTargetPlatform != TargetPlatform.windows) return;
     await channel.invokeMethod<void>('resizeColorCard', {

@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 
 import 'controller.dart';
 import 'editor.dart';
+import 'theme.dart';
 import 'ui/controls.dart';
 import 'ui/color_preview.dart';
 import 'ui/capture_mirrors.dart';
@@ -23,9 +24,11 @@ class Workspace extends StatelessWidget {
     final surface = CallbackShortcuts(
       bindings: {
         const SingleActivator(LogicalKeyboardKey.escape): () {
-          if (c.countdown > 0) {
+          if (c.recording.remaining > 0) {
+            c.recording.cancelCountdown();
+          } else if (c.countdown > 0) {
             c.cancelCountdown();
-          } else if (!c.busy) {
+          } else if (c.panel == 'capture' || !c.busy) {
             c.discard();
           }
         },
@@ -57,7 +60,7 @@ class Workspace extends StatelessWidget {
                             c.panel == 'capture' ||
                             c.panel == 'color')
                         ? Duration.zero
-                        : const Duration(milliseconds: 170),
+                        : AppStyle.motion(context, 180),
                     switchInCurve: Curves.easeOutCubic,
                     switchOutCurve: Curves.easeIn,
                     child: c.panel == 'capture' && c.clip != null
@@ -114,12 +117,14 @@ class Workspace extends StatelessWidget {
                         0,
                         460,
                       ),
-                      child: FloatingErrorNotification(
-                        message: c.error!,
-                        onDismiss: () {
-                          c.error = null;
-                          c.changed();
-                        },
+                      child: PanelReveal(
+                        child: FloatingErrorNotification(
+                          message: c.error!,
+                          onDismiss: () {
+                            c.error = null;
+                            c.changed();
+                          },
+                        ),
                       ),
                     ),
                 ],
@@ -141,190 +146,66 @@ class Workspace extends StatelessWidget {
 class CaptureStrip extends StatelessWidget {
   const CaptureStrip({super.key, required this.controller});
   final ClipController controller;
-  @override
-  Widget build(BuildContext context) {
-    final c = controller;
-    final cs = Theme.of(context).colorScheme;
-    return Center(
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Row(
-              children: [
-                Icon(CupertinoIcons.crop, color: cs.primary, size: 21),
-                const SizedBox(width: 10),
-                const Text(
-                  '定格',
-                  style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
-                ),
-                const SizedBox(width: 8),
-                if (MediaQuery.sizeOf(context).width >= 440)
-                  Text(
-                    'SCREENSHOT',
-                    style: TextStyle(
-                      fontSize: 10,
-                      letterSpacing: 1.6,
-                      color: cs.onSurfaceVariant,
-                    ),
-                  ),
-                const Spacer(),
-                ToolButton(
-                  label: '文字翻译',
-                  icon: CupertinoIcons.globe,
-                  onPressed: c.busy ? null : c.openTranslation,
-                ),
-                ToolButton(
-                  label: '屏幕取色 · Ctrl+Shift+C',
-                  icon: Icons.colorize_rounded,
-                  onPressed: c.busy ? null : () => c.capture('color'),
-                ),
-                ToolButton(
-                  label: '偏好设置',
-                  icon: CupertinoIcons.slider_horizontal_3,
-                  onPressed: c.busy
-                      ? null
-                      : () {
-                          c.panel = 'settings';
-                          c.changed();
-                          c.bridge.present('settings');
-                        },
-                ),
-                ToolButton(
-                  label: '收起 · Esc',
-                  icon: CupertinoIcons.xmark,
-                  onPressed: c.busy ? null : c.discard,
-                ),
-              ],
-            ),
-            const SizedBox(height: 18),
-            if (c.countdown > 0)
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  AnimatedSwitcher(
-                    duration: MediaQuery.disableAnimationsOf(context)
-                        ? Duration.zero
-                        : const Duration(milliseconds: 160),
-                    child: Text(
-                      '${c.countdown}',
-                      key: ValueKey(c.countdown),
-                      style: TextStyle(
-                        fontSize: 36,
-                        color: cs.primary,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 16),
-                  const Text('秒后开始截图'),
-                  const SizedBox(width: 16),
-                  ToolButton(
-                    label: '取消倒计时',
-                    onPressed: c.cancelCountdown,
-                    child: const Text('取消'),
-                  ),
-                ],
-              )
-            else
-              Row(
-                spacing: 10,
-                children: [
-                  for (final item in const [
-                    ('region', CupertinoIcons.crop, '区域截图', '拖动选取'),
-                    ('window', CupertinoIcons.rectangle, '窗口截图', '点击窗口'),
-                    ('screen', CupertinoIcons.desktopcomputer, '全屏截图', '确认整屏'),
-                  ])
-                    Expanded(
-                      child: GlassPanel(
-                        padding: EdgeInsets.zero,
-                        child: ToolButton(
-                          label: item.$3,
-                          onPressed: c.ready && !c.busy
-                              ? () => c.capture(item.$1)
-                              : null,
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 10),
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(item.$2, size: 24),
-                                const SizedBox(height: 10),
-                                Text(
-                                  item.$3,
-                                  style: const TextStyle(
-                                    fontSize: 13,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                                const SizedBox(height: 5),
-                                Text(
-                                  item.$4,
-                                  style: TextStyle(
-                                    fontSize: 10,
-                                    color: cs.onSurfaceVariant,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-            const SizedBox(height: 18),
-            Text(
-              c.hotkey
-                  ? (Platform.isMacOS ? '⌃ ⇧ X 随时截图' : 'Ctrl + Shift + X 随时截图')
-                  : '快捷键被占用，请用托盘菜单',
-              style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant),
-            ),
-            const SizedBox(height: 9),
-            Wrap(
-              spacing: 3,
-              runSpacing: 3,
-              alignment: WrapAlignment.center,
-              children: [
-                for (final seconds in [0, 3, 5, 10])
-                  ToolButton(
-                    label: seconds == 0 ? '无延时' : '延时 $seconds 秒',
-                    selected: c.delay == seconds,
-                    onPressed: c.busy
-                        ? null
-                        : () => c.settings(seconds: seconds),
-                    child: Text(seconds == 0 ? '立即' : '${seconds}s'),
-                  ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
 
-class Preferences extends StatelessWidget {
-  const Preferences({super.key, required this.controller});
-  final ClipController controller;
   @override
   Widget build(BuildContext context) {
     final c = controller;
-    final cs = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    final canCapture = c.ready && !c.busy && !c.recording.engaged;
     return SingleChildScrollView(
-      padding: const EdgeInsets.all(24),
+      padding: const EdgeInsets.fromLTRB(20, 14, 20, 18),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
-        mainAxisSize: MainAxisSize.min,
         children: [
           Row(
             children: [
-              const Expanded(
-                child: Text(
-                  '偏好设置',
-                  style: TextStyle(fontSize: 21, fontWeight: FontWeight.w600),
+              DecoratedBox(
+                decoration: BoxDecoration(
+                  color: cs.primary,
+                  borderRadius: BorderRadius.circular(AppStyle.controlRadius),
                 ),
+                child: Padding(
+                  padding: const EdgeInsets.all(9),
+                  child: Icon(
+                    CupertinoIcons.crop,
+                    color: cs.onPrimary,
+                    size: 20,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  '定格',
+                  style: theme.textTheme.titleLarge,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              ToolButton(
+                label: '文字翻译',
+                title: '翻译',
+                icon: CupertinoIcons.globe,
+                onPressed: c.busy ? null : c.openTranslation,
+              ),
+              ToolButton(
+                label: '屏幕取色 · Ctrl+Shift+C',
+                title: '取色',
+                icon: Icons.colorize_rounded,
+                onPressed: c.busy ? null : () => c.capture('color'),
+              ),
+              ToolButton(
+                label: '偏好设置',
+                title: '设置',
+                icon: CupertinoIcons.slider_horizontal_3,
+                onPressed: c.busy
+                    ? null
+                    : () {
+                        c.panel = 'settings';
+                        c.changed();
+                        c.bridge.present('settings');
+                      },
               ),
               ToolButton(
                 label: '收起 · Esc',
@@ -333,151 +214,282 @@ class Preferences extends StatelessWidget {
               ),
             ],
           ),
-          const SizedBox(height: 4),
-          Text(
-            '专注画面，随手完成。',
-            style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
-          ),
-          const SizedBox(height: 24),
-          GlassPanel(
-            child: Row(
+          const SizedBox(height: 16),
+          if (c.countdown > 0)
+            FlatPanel(
+              floating: false,
+              padding: const EdgeInsets.all(14),
+              child: Row(
+                spacing: 12,
+                children: [
+                  AnimatedSwitcher(
+                    duration: AppStyle.motion(context),
+                    child: Text(
+                      '${c.countdown}',
+                      key: ValueKey(c.countdown),
+                      style: theme.textTheme.headlineMedium?.copyWith(
+                        color: cs.primary,
+                      ),
+                    ),
+                  ),
+                  const Expanded(child: Text('秒后开始截图')),
+                  ToolButton(
+                    label: '取消倒计时',
+                    onPressed: c.cancelCountdown,
+                    child: const Text('取消'),
+                  ),
+                ],
+              ),
+            )
+          else
+            LayoutBuilder(
+              builder: (context, constraints) {
+                final scale = MediaQuery.textScalerOf(context).scale(15) / 15;
+                final count = constraints.maxWidth >= 380 * scale ? 3 : 1;
+                final width = (constraints.maxWidth - (count - 1) * 10) / count;
+                return Wrap(
+                  spacing: 10,
+                  runSpacing: 10,
+                  children: [
+                    for (final item in const [
+                      ('region', CupertinoIcons.crop, '区域截图', '拖动选取'),
+                      ('window', CupertinoIcons.rectangle, '窗口截图', '点击窗口'),
+                      (
+                        'screen',
+                        CupertinoIcons.desktopcomputer,
+                        '全屏截图',
+                        '确认整屏',
+                      ),
+                    ])
+                      SizedBox(
+                        width: width,
+                        child: FlatPanel(
+                          padding: EdgeInsets.zero,
+                          floating: false,
+                          color: item.$1 == 'region'
+                              ? cs.primaryContainer
+                              : cs.surface,
+                          child: ToolButton(
+                            label: item.$3,
+                            onPressed: canCapture
+                                ? () => c.capture(item.$1)
+                                : null,
+                            child: SizedBox(
+                              width: double.infinity,
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 7,
+                                  vertical: 8,
+                                ),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(
+                                      item.$2,
+                                      color: item.$1 == 'region'
+                                          ? cs.onPrimaryContainer
+                                          : cs.primary,
+                                      size: 22,
+                                    ),
+                                    const SizedBox(height: 9),
+                                    Text(
+                                      item.$3,
+                                      style: theme.textTheme.titleMedium,
+                                    ),
+                                    const SizedBox(height: 3),
+                                    Text(
+                                      item.$4,
+                                      style: theme.textTheme.bodySmall
+                                          ?.copyWith(
+                                            color: cs.onSurfaceVariant,
+                                          ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                );
+              },
+            ),
+          const SizedBox(height: 14),
+          FlatPanel(
+            floating: false,
+            shadow: false,
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+            child: Wrap(
+              crossAxisAlignment: WrapCrossAlignment.center,
+              alignment: WrapAlignment.spaceBetween,
+              spacing: 10,
+              runSpacing: 4,
               children: [
-                Icon(
-                  CupertinoIcons.globe,
-                  size: 21,
-                  color: cs.onSurfaceVariant,
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        '翻译 API Key',
-                        style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        '管理翻译服务商、模型与密钥',
-                        style: TextStyle(
-                          fontSize: 11,
-                          color: cs.onSurfaceVariant,
-                        ),
-                      ),
-                    ],
+                Text(
+                  c.hotkey
+                      ? (Platform.isMacOS
+                            ? '⌃ ⇧ X  随时截图'
+                            : 'Ctrl + Shift + X  随时截图')
+                      : '全局快捷键不可用',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: cs.onSurfaceVariant,
                   ),
                 ),
-                const SizedBox(width: 8),
-                ToolButton(
-                  label: '配置翻译 API Key',
-                  onPressed: c.busy
-                      ? null
-                      : () => c.openTranslation(settings: true),
-                  child: const Text('配置'),
+                Wrap(
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  spacing: 3,
+                  children: [
+                    Text(
+                      '延时',
+                      style: theme.textTheme.labelMedium?.copyWith(
+                        color: cs.onSurfaceVariant,
+                      ),
+                    ),
+                    for (final seconds in [0, 3, 5, 10])
+                      ToolButton(
+                        label: seconds == 0 ? '无延时' : '延时 $seconds 秒',
+                        size: 28,
+                        selected: c.delay == seconds,
+                        onPressed: c.busy
+                            ? null
+                            : () => c.settings(seconds: seconds),
+                        child: Text(seconds == 0 ? '立即' : '${seconds}s'),
+                      ),
+                  ],
                 ),
               ],
             ),
           ),
+          if (c.recording.notice != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 10),
+              child: Text(
+                c.recording.notice!,
+                style: theme.textTheme.bodySmall,
+              ),
+            ),
+          if (c.recording.savedPath != null)
+            CopyableMessage(message: '录屏已保存：${c.recording.savedPath}'),
+          if (c.recording.error != null)
+            CopyableMessage(message: c.recording.error!),
+        ],
+      ),
+    );
+  }
+}
+
+class Preferences extends StatelessWidget {
+  const Preferences({super.key, required this.controller});
+  final ClipController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = controller;
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(22, 16, 22, 22),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              ToolButton(
+                label: '打开截图工具条',
+                icon: CupertinoIcons.chevron_left,
+                onPressed: () {
+                  c.panel = c.clip == null ? 'palette' : 'capture';
+                  c.changed();
+                  c.bridge.present(c.panel);
+                },
+              ),
+              const SizedBox(width: 8),
+              Expanded(child: Text('偏好设置', style: theme.textTheme.titleLarge)),
+              ToolButton(
+                label: '收起 · Esc',
+                icon: CupertinoIcons.xmark,
+                onPressed: c.busy ? null : c.discard,
+              ),
+            ],
+          ),
           const SizedBox(height: 16),
-          GlassPanel(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                const Text(
-                  '截图延时',
-                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  '留出展开菜单、切换窗口的时间',
-                  style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant),
-                ),
-                const SizedBox(height: 10),
-                Wrap(
-                  spacing: 6,
-                  runSpacing: 6,
+          _SettingsSection(
+            title: '截图与录屏',
+            children: [
+              _SettingRow(
+                icon: CupertinoIcons.timer,
+                title: '截图延时',
+                action: Wrap(
+                  spacing: 4,
+                  runSpacing: 4,
                   children: [
                     for (final seconds in [0, 3, 5, 10])
                       ToolButton(
                         label: seconds == 0 ? '立即截图' : '延时 $seconds 秒',
+                        size: 30,
                         selected: c.delay == seconds,
                         onPressed: () => c.settings(seconds: seconds),
-                        child: Text(seconds == 0 ? '立即' : '$seconds 秒'),
+                        child: Text(seconds == 0 ? '立即' : '${seconds}s'),
                       ),
                   ],
                 ),
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                  child: Container(
-                    height: .7,
-                    color: Theme.of(context).dividerColor,
+              ),
+              if (Platform.isMacOS)
+                _SettingRow(
+                  icon: CupertinoIcons.folder,
+                  title: '录屏保存位置',
+                  details: c.recordingFolder ?? '桌面 · 等待授权',
+                  action: ToolButton(
+                    label: '更改录屏保存位置',
+                    onPressed: c.busy || c.recording.engaged
+                        ? null
+                        : c.changeRecordingFolder,
+                    child: const Text('更改…'),
                   ),
                 ),
-                const Text(
-                  '外观',
-                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
-                ),
-                const SizedBox(height: 10),
-                Wrap(
-                  spacing: 6,
-                  children: [
-                    ToolButton(
-                      label: '跟随系统外观',
-                      selected: c.themeMode == ThemeMode.system,
-                      onPressed: () => c.settings(appearance: ThemeMode.system),
-                      child: const Text('跟随系统'),
-                    ),
-                    ToolButton(
-                      label: '浅色外观',
-                      selected: c.themeMode == ThemeMode.light,
-                      onPressed: () => c.settings(appearance: ThemeMode.light),
-                      child: const Text('浅色'),
-                    ),
-                    ToolButton(
-                      label: '深色外观',
-                      selected: c.themeMode == ThemeMode.dark,
-                      onPressed: () => c.settings(appearance: ThemeMode.dark),
-                      child: const Text('深色'),
-                    ),
-                  ],
-                ),
-              ],
-            ),
+              _SettingRow(
+                icon: CupertinoIcons.command,
+                title: '全局快捷键',
+                details:
+                    '${Platform.isMacOS ? '⌃ ⇧' : 'Ctrl + Shift +'} X  截图${c.hotkey ? '' : '（不可用）'}\n'
+                    '${Platform.isMacOS ? '⌃ ⇧' : 'Ctrl + Shift +'} C  取色${c.colorHotkey ? '' : '（不可用）'}',
+              ),
+            ],
           ),
           const SizedBox(height: 16),
-          GlassPanel(
-            child: Row(
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        '开机启动',
-                        style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w600,
-                        ),
+          _SettingsSection(
+            title: '应用',
+            children: [
+              _SettingRow(
+                icon: CupertinoIcons.circle_lefthalf_fill,
+                title: '外观',
+                action: Wrap(
+                  spacing: 4,
+                  runSpacing: 4,
+                  children: [
+                    for (final option in const [
+                      (ThemeMode.system, '跟随系统外观', '跟随系统'),
+                      (ThemeMode.light, '浅色外观', '浅色'),
+                      (ThemeMode.dark, '深色外观', '深色'),
+                    ])
+                      ToolButton(
+                        label: option.$2,
+                        selected: c.themeMode == option.$1,
+                        onPressed: () => c.settings(appearance: option.$1),
+                        child: Text(option.$3),
                       ),
-                      const SizedBox(height: 4),
-                      Text(
-                        c.launchAtLoginStatus == 'requiresApproval'
-                            ? (Platform.isMacOS
-                                  ? '请在系统登录项中允许定格启动'
-                                  : '请在系统启动应用中允许定格启动')
-                            : '登录后驻留托盘，随时截图',
-                        style: TextStyle(
-                          fontSize: 11,
-                          color: cs.onSurfaceVariant,
-                        ),
-                      ),
-                    ],
-                  ),
+                  ],
                 ),
-                ToolButton(
+              ),
+              _SettingRow(
+                icon: CupertinoIcons.power,
+                title: '开机启动',
+                details: c.launchAtLoginStatus == 'requiresApproval'
+                    ? '请在系统设置中允许定格启动'
+                    : '登录后在菜单栏或系统托盘运行',
+                action: ToolButton(
                   label: '开机启动',
                   selected: c.launchAtLogin,
                   onPressed: c.startupBusy
@@ -496,101 +508,150 @@ class Preferences extends StatelessWidget {
                         : '已关闭',
                   ),
                 ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 16),
-          GlassPanel(
-            child: Row(
-              children: [
-                Icon(
-                  CupertinoIcons.command,
-                  size: 21,
-                  color: cs.onSurfaceVariant,
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        Platform.isMacOS
-                            ? 'Control + Shift + X'
-                            : 'Ctrl + Shift + X',
-                        style: const TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        c.hotkey ? '全局区域截图 · Esc 取消' : '快捷键被其他应用占用',
-                        style: TextStyle(
-                          fontSize: 11,
-                          color: cs.onSurfaceVariant,
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      const Text(
-                        'Control + Shift + C',
-                        style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        c.colorHotkey ? '全局屏幕取色 · 无需框选' : '取色快捷键不可用，可从工具栏进入',
-                        style: TextStyle(
-                          fontSize: 11,
-                          color: cs.onSurfaceVariant,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-          if (Platform.isMacOS)
-            Padding(
-              padding: const EdgeInsets.only(top: 12),
-              child: Wrap(
-                spacing: 8,
-                children: [
-                  ToolButton(
-                    label: '打开屏幕录制权限设置',
-                    onPressed: () => c.perform(c.bridge.permissions),
-                    child: const Text('屏幕录制权限…'),
-                  ),
-                  ToolButton(
-                    label: '在访达中显示当前应用',
-                    onPressed: () => c.perform(c.bridge.revealApplication),
-                    child: const Text('定位当前应用'),
-                  ),
-                ],
               ),
+              _SettingRow(
+                icon: CupertinoIcons.globe,
+                title: '翻译 API Key',
+                details: '管理翻译服务商、模型与密钥',
+                action: ToolButton(
+                  label: '配置翻译 API Key',
+                  onPressed: c.busy
+                      ? null
+                      : () => c.openTranslation(settings: true),
+                  child: const Text('配置'),
+                ),
+              ),
+            ],
+          ),
+          if (Platform.isMacOS) ...[
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 4,
+              children: [
+                ToolButton(
+                  label: '打开屏幕录制权限设置',
+                  onPressed: () => c.perform(c.bridge.permissions),
+                  child: const Text('屏幕录制权限…'),
+                ),
+                ToolButton(
+                  label: '在访达中显示当前应用',
+                  onPressed: () => c.perform(c.bridge.revealApplication),
+                  child: const Text('定位当前应用'),
+                ),
+              ],
             ),
-          const SizedBox(height: 20),
+          ],
+          const SizedBox(height: 12),
           Text(
-            '图片只在内存中处理，不保存历史、不上传。\n主动翻译时仅发送原文至你配置的渠道。',
-            style: TextStyle(
-              fontSize: 11,
-              height: 1.7,
+            '截图在内存中处理。使用在线翻译时，原文会发送至所选渠道。',
+            style: theme.textTheme.bodySmall?.copyWith(
               color: cs.onSurfaceVariant,
             ),
           ),
-          const SizedBox(height: 18),
-          ToolButton(
-            label: '打开截图工具条',
-            onPressed: () {
-              c.panel = c.clip == null ? 'palette' : 'capture';
-              c.changed();
-              c.bridge.present(c.panel);
-            },
-            child: const Text('打开截图工具条'),
-          ),
         ],
+      ),
+    );
+  }
+}
+
+class _SettingsSection extends StatelessWidget {
+  const _SettingsSection({required this.title, required this.children});
+
+  final String title;
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      Padding(
+        padding: const EdgeInsets.only(left: 2, bottom: 7),
+        child: Text(title, style: Theme.of(context).textTheme.titleMedium),
+      ),
+      FlatPanel(
+        floating: false,
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        child: Column(
+          children: [
+            for (final (index, child) in children.indexed) ...[
+              if (index > 0) const Divider(height: 1),
+              child,
+            ],
+          ],
+        ),
+      ),
+    ],
+  );
+}
+
+class _SettingRow extends StatelessWidget {
+  const _SettingRow({
+    required this.icon,
+    required this.title,
+    this.details,
+    this.action,
+  });
+  final IconData icon;
+  final String title;
+  final String? details;
+  final Widget? action;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 9),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final compact =
+              constraints.maxWidth < 340 ||
+              MediaQuery.textScalerOf(context).scale(13) > 17;
+          return Row(
+            children: [
+              Expanded(
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: Icon(icon, size: 17, color: cs.primary),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(title, style: theme.textTheme.labelLarge),
+                          if (details != null) ...[
+                            const SizedBox(height: 3),
+                            Text(
+                              details!,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                color: cs.onSurfaceVariant,
+                              ),
+                            ),
+                          ],
+                          if (compact && action != null) ...[
+                            const SizedBox(height: 6),
+                            action!,
+                          ],
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              if (!compact && action != null) ...[
+                const SizedBox(width: 8),
+                action!,
+              ],
+            ],
+          );
+        },
       ),
     );
   }

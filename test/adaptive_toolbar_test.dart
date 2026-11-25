@@ -7,7 +7,12 @@ import 'package:screen_clip_win/src/editor.dart';
 import 'package:screen_clip_win/src/ui/controls.dart';
 import 'package:screen_clip_win/src/ui/toolbar_layout.dart';
 
-Future<void> mount(WidgetTester tester, Size viewport) async {
+Future<void> mount(
+  WidgetTester tester,
+  Size viewport, {
+  String mode = 'screen',
+  List<Rect> workAreas = const [],
+}) async {
   tester.view.physicalSize = viewport;
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.resetPhysicalSize);
@@ -25,7 +30,16 @@ Future<void> mount(WidgetTester tester, Size viewport) async {
         .buffer
         .asUint8List();
     image.dispose();
-    clip = Clip(bytes: bytes, width: 1000, height: 750, mode: 'screen');
+    clip = Clip(
+      bytes: bytes,
+      width: 1000,
+      height: 750,
+      mode: mode,
+      screens: workAreas.isEmpty
+          ? const []
+          : const [Rect.fromLTWH(0, 0, 1000, 750)],
+      workAreas: workAreas,
+    );
   });
   await tester.pumpWidget(
     MaterialApp(
@@ -50,6 +64,75 @@ Future<void> press(WidgetTester tester, String label) async {
 }
 
 void main() {
+  testWidgets('Tool button content shares its visual center', (tester) async {
+    const textKey = ValueKey('tool-text');
+    const iconKey = ValueKey('tool-icon');
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Center(
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ToolButton(
+                label: '文字按钮',
+                size: 44,
+                onPressed: () {},
+                child: const Text('确定', key: textKey),
+              ),
+              ToolButton(
+                label: '图标按钮',
+                size: 44,
+                onPressed: () {},
+                child: const Icon(Icons.check, key: iconKey),
+              ),
+              ToolButton(
+                label: '图文按钮',
+                title: '设置',
+                icon: Icons.settings,
+                size: 44,
+                onPressed: () {},
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    final buttons = find.byType(ToolButton);
+    expect(
+      tester.getCenter(buttons.at(0)),
+      tester.getCenter(find.byKey(textKey)),
+    );
+    expect(
+      tester.getCenter(buttons.at(1)),
+      tester.getCenter(find.byKey(iconKey)),
+    );
+    final iconAndTitle = find.descendant(
+      of: buttons.at(2),
+      matching: find.byType(Column),
+    );
+    expect(tester.getCenter(buttons.at(2)), tester.getCenter(iconAndTitle));
+  });
+
+  testWidgets('Selection toolbar stays clear of the Dock', (tester) async {
+    await mount(
+      tester,
+      const Size(1000, 750),
+      mode: 'region',
+      workAreas: const [Rect.fromLTRB(0, 24, 1000, 670)],
+    );
+    await tester.dragFrom(const Offset(240, 520), const Offset(480, 180));
+    await tester.pumpAndSettle();
+    final primary = find.byKey(const ValueKey('capture-primary-tools'));
+    expect(tester.getRect(primary).bottom, lessThan(520));
+    expect(painter(tester).region!.bottom, closeTo(700, 1));
+    await tester.drag(
+      find.byKey(const ValueKey('capture-toolbar-drag-handle')),
+      const Offset(0, 1500),
+    );
+    await tester.pumpAndSettle();
+    expect(tester.getRect(primary).bottom, lessThanOrEqualTo(670 - 12));
+  });
+
   testWidgets(
     'Toolbar drag moves tools without changing selection and preserves position through menus',
     (tester) async {
@@ -81,7 +164,7 @@ void main() {
       );
       await tester.drag(handle, const Offset(-2000, -2000));
       await tester.pumpAndSettle();
-      final clamped = tester.getRect(find.byType(GlassPanel).last);
+      final clamped = tester.getRect(find.byType(FlatPanel).last);
       expect(clamped.left, greaterThanOrEqualTo(12));
       expect(clamped.top, greaterThanOrEqualTo(12));
       expect(painter(tester).region, selection);
@@ -178,22 +261,27 @@ void main() {
       'Clicks and tiny closed shapes are ignored in logical pixels at $viewport',
       (tester) async {
         await mount(tester, viewport);
+        final handle = find.byKey(
+          const ValueKey('capture-toolbar-drag-handle'),
+        );
+        await tester.drag(handle, Offset(0, viewport.height));
+        await tester.pumpAndSettle();
         for (final (index, label) in ['矩形 · R', '圆形标注', '椭圆标注'].indexed) {
           await press(tester, label);
           final count = painter(tester).marks.length;
-          await tester.tapAt(const Offset(40, 40));
+          await tester.tapAt(const Offset(40, 12));
           await tester.pumpAndSettle();
           expect(painter(tester).marks, hasLength(count));
           expect(find.byKey(const ValueKey('shape-text-prompt')), findsNothing);
-          await tester.dragFrom(const Offset(40, 40), const Offset(100, 4));
+          await tester.dragFrom(const Offset(40, 12), const Offset(100, 4));
           await tester.pumpAndSettle();
           expect(painter(tester).marks, hasLength(count));
-          await tester.dragFrom(const Offset(40, 40), const Offset(100, 24));
+          await tester.dragFrom(const Offset(40, 12), const Offset(100, 24));
           await tester.pumpAndSettle();
           expect(painter(tester).marks, hasLength(count + 1));
           final accepted = painter(tester).marks.last;
           await press(tester, '撤销');
-          await tester.tapAt(const Offset(40, 40));
+          await tester.tapAt(const Offset(40, 12));
           await tester.pumpAndSettle();
           await press(tester, '重做');
           expect(painter(tester).marks.last, accepted);
@@ -208,7 +296,7 @@ void main() {
     'Toolbar measures its content and caps width when the viewport narrows',
     (tester) async {
       await mount(tester, const Size(1200, 800));
-      Rect toolbar() => tester.getRect(find.byType(GlassPanel).last);
+      Rect toolbar() => tester.getRect(find.byType(FlatPanel).last);
       final selectWidth = toolbar().width;
       expect(selectWidth, lessThan(1200 - 24));
       await press(tester, '文字 · T');

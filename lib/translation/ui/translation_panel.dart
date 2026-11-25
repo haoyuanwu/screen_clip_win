@@ -2,6 +2,7 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../src/theme.dart';
 import '../../src/ui/controls.dart';
 import '../../src/ui/capture_mirrors.dart' show scheduleCaptureFrame;
 import '../controller.dart';
@@ -101,29 +102,25 @@ class _TranslationPanelState extends State<TranslationPanel> {
     required String title,
     required Widget child,
     required ColorScheme colors,
-  }) => DecoratedBox(
-    decoration: BoxDecoration(
-      color: colors.surfaceContainerLowest,
-      borderRadius: BorderRadius.circular(12),
-      border: Border.all(color: colors.outlineVariant),
-    ),
-    child: Padding(
-      padding: const EdgeInsets.all(14),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            title,
-            style: TextStyle(
-              fontSize: 12,
-              color: colors.onSurfaceVariant,
-              fontWeight: FontWeight.w600,
-            ),
+  }) => FlatPanel(
+    floating: false,
+    padding: const EdgeInsets.all(14),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          title,
+          style: TextStyle(
+            fontSize: 12,
+            color: colors.onSurfaceVariant,
+            fontWeight: FontWeight.w600,
           ),
-          const SizedBox(height: 10),
-          Expanded(child: child),
-        ],
-      ),
+        ),
+        const SizedBox(height: 8),
+        Divider(height: 1, color: colors.outlineVariant),
+        const SizedBox(height: 8),
+        Expanded(child: child),
+      ],
     ),
   );
   @override
@@ -142,7 +139,7 @@ class _TranslationPanelState extends State<TranslationPanel> {
           bindings: {const SingleActivator(LogicalKeyboardKey.escape): close},
           child: Material(
             color: colors.surface,
-            borderRadius: BorderRadius.circular(16),
+            borderRadius: BorderRadius.circular(AppStyle.panelRadius),
             clipBehavior: Clip.antiAlias,
             child: Focus(
               autofocus: true,
@@ -150,6 +147,7 @@ class _TranslationPanelState extends State<TranslationPanel> {
               child: ArgosSettings(
                 controller: c,
                 channel: c.activeChannel!,
+                onClose: close,
                 onBack: () {
                   c.needsLocalModels = false;
                   if (widget.onConfigured != null) {
@@ -195,13 +193,13 @@ class _TranslationPanelState extends State<TranslationPanel> {
           autofocus: true,
           focusNode: panelFocus,
           child: ClipRRect(
-            borderRadius: BorderRadius.circular(16),
+            borderRadius: BorderRadius.circular(AppStyle.panelRadius),
             child: Material(
-              color: colors.surface,
+              color: colors.surfaceContainerLow,
               child: Column(
                 children: [
                   Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 10, 8, 10),
+                    padding: const EdgeInsets.fromLTRB(18, 12, 12, 12),
                     child: Row(
                       children: [
                         Icon(
@@ -214,12 +212,9 @@ class _TranslationPanelState extends State<TranslationPanel> {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              const Text(
-                                '翻译',
-                                style: TextStyle(
-                                  fontSize: 17,
-                                  fontWeight: FontWeight.w600,
-                                ),
+                              Text(
+                                settings ? '翻译设置' : '翻译',
+                                style: Theme.of(context).textTheme.titleLarge,
                               ),
                               Text(
                                 settings

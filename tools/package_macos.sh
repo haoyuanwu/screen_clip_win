@@ -2,16 +2,21 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
-version="${1:?Usage: tools/package_macos.sh VERSION [arm64]}"
-target="${2:-arm64}"
-case "$target" in
-  arm64) arch=arm64 ;;
-  *) printf 'macOS releases support Apple Silicon (arm64) only: %s\n' "$target" >&2; exit 1 ;;
+version="${1:?Usage: tools/package_macos.sh VERSION [arm64|--release]}"
+case "${2:-arm64}" in
+  arm64) suffix="macOS-arm64" ;;
+  --release) suffix="$version-macOS-arm64" ;;
+  *) printf 'Usage: tools/package_macos.sh VERSION [arm64|--release]\n' >&2; exit 1 ;;
 esac
+arch=arm64
 source_app="$root/build/macos/Build/Products/Release/定格.app"
 test -d "$source_app"
-mkdir -p "$root/dist"
-stage="$(mktemp -d "$root/dist/macos-$version.XXXXXX")"
+dist="$root/dist"
+mkdir -p "$dist"
+work="$(mktemp -d "$dist/.macos-package.XXXXXX")"
+trap 'rm -rf "$work"' EXIT
+stage="$work/volume"
+mkdir "$stage"
 app="$stage/定格.app"
 ditto "$source_app" "$app"
 python3 - "$app" <<'PY'
@@ -111,16 +116,12 @@ subprocess.run(['codesign', '--verify', '--deep', '--strict', str(app)], check=T
 PY
 
 archs="$(lipo -archs "$app/Contents/MacOS/DingGe")"
-if [[ "$archs" == *arm64* && "$archs" == *x86_64* ]]; then
-  platform="Universal"
-elif [[ "$archs" == *arm64* ]]; then
-  platform="arm64"
-else
-  platform="x64"
-fi
-dmg="$root/dist/DingGe-$version-macOS-$platform.dmg"
-test ! -e "$dmg"
-hdiutil create -volname "定格 $version" -srcfolder "$stage" -format UDZO -ov "$dmg"
-hdiutil verify "$dmg"
-(cd "$root/dist" && shasum -a 256 "$(basename "$dmg")" > "SHA256SUMS-$version-macOS-$platform.txt")
-printf 'DMG: %s\nArchitecture: %s\n' "$dmg" "$archs"
+test "$archs" = "$arch"
+dmg="DingGe-$suffix.dmg"
+checksum="SHA256SUMS-$suffix.txt"
+hdiutil create -volname "定格 $version" -srcfolder "$stage" -format UDZO "$work/$dmg"
+hdiutil verify "$work/$dmg"
+(cd "$work" && shasum -a 256 "$dmg" > "$checksum")
+mv -f "$work/$dmg" "$dist/$dmg"
+mv -f "$work/$checksum" "$dist/$checksum"
+printf 'DMG: %s\nArchitecture: %s\n' "$dist/$dmg" "$archs"

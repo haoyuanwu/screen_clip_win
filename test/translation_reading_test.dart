@@ -282,7 +282,7 @@ void main() {
       );
       await settleTranslation(tester);
       final popup = tester.getRect(panelFinder);
-      final toolbar = tester.getRect(find.byType(GlassPanel).last);
+      final toolbar = tester.getRect(find.byType(FlatPanel).last);
       final overlap = popup.intersect(toolbar);
       expect(overlap.isEmpty, isFalse);
       final hit = tester.hitTestOnBinding(overlap.center);

@@ -8,6 +8,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:screen_clip_win/src/color_picker.dart';
 import 'package:screen_clip_win/src/controller.dart';
 import 'package:screen_clip_win/src/editor.dart';
+import 'package:screen_clip_win/src/platform_bridge.dart';
 import 'package:screen_clip_win/src/workspace.dart';
 import 'package:screen_clip_win/src/ui/color_preview.dart';
 
@@ -178,6 +179,17 @@ void main() {
       }
       final picker = ScreenColorPicker(ColorPixels(bytes, 800, 600));
       addTearDown(picker.dispose);
+      final cursorChanges = <bool>[];
+      final messenger = tester.binding.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(DesktopBridge.channel, (call) async {
+        if (call.method == 'setEyedropperCursor') {
+          cursorChanges.add(call.arguments as bool);
+        }
+        return null;
+      });
+      addTearDown(
+        () => messenger.setMockMethodCallHandler(DesktopBridge.channel, null),
+      );
       int picked = 0;
       await tester.pumpWidget(
         MaterialApp(
@@ -210,6 +222,13 @@ void main() {
       expect(picked, 1);
       expect(picker.fixed, true);
       await mouse.removePointer();
+      picker.resume();
+      await tester.pumpAndSettle();
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(
+        cursorChanges,
+        Platform.isMacOS ? [true, false, true, false] : isEmpty,
+      );
     },
   );
   test('Magnifier centers the sampled pixel, clamps screen edges and freezes with the color', () {

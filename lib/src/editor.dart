@@ -2,6 +2,8 @@ import '../translation/ui/language_controls.dart';
 import '../translation/ocr_paragraphs.dart';
 import '../translation/source_appearance.dart';
 
+import 'package:flutter/foundation.dart';
+
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
@@ -11,6 +13,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/cupertino.dart' show CupertinoIcons;
 
 import 'ui/controls.dart';
+import 'ui/recording_controls.dart';
 import 'ui/scroll_capture.dart';
 import 'ui/toolbar_layout.dart';
 import 'ocr_selection.dart';
@@ -78,7 +81,7 @@ bool isPrivacyBrush(MarkTool tool) =>
 
 /// A cached, screen-aligned low-resolution image; nearest-neighbor upscaling
 /// makes square mosaic blocks without recomputing them on every pointer move.
-Future<ui.Image> makeMosaicImage(ui.Image image) async {
+ui.Image makeMosaicImage(ui.Image image) {
   final width = (image.width / 14).ceil(), height = (image.height / 14).ceil();
   final recorder = ui.PictureRecorder();
   final canvas = Canvas(recorder);
@@ -90,7 +93,7 @@ Future<ui.Image> makeMosaicImage(ui.Image image) async {
   );
   final picture = recorder.endRecording();
   try {
-    return await picture.toImage(width, height);
+    return picture.toImageSync(width, height);
   } finally {
     picture.dispose();
   }
@@ -579,13 +582,23 @@ void paintCapture(
   List<Mark> marks, {
   ui.Image? mosaic,
 }) {
+  canvas.drawImage(image, Offset.zero, Paint());
+  _paintCaptureMarks(canvas, image, marks, mosaic: mosaic);
+}
+
+void _paintCaptureMarks(
+  Canvas canvas,
+  ui.Image image,
+  List<Mark> marks, {
+  ui.Image? mosaic,
+}) {
+  if (marks.isEmpty) return;
   final bounds = Rect.fromLTWH(
     0,
     0,
     image.width.toDouble(),
     image.height.toDouble(),
   );
-  canvas.drawImage(image, Offset.zero, Paint());
   for (final mark in marks) {
     for (final (rect, color) in mark.sourceRestoration) {
       canvas.drawRect(rect, Paint()..color = color);
@@ -624,14 +637,18 @@ void paintCapture(
     canvas.restore();
   }
   for (final penLayer in [true, false]) {
-    canvas.saveLayer(bounds, Paint());
+    var hasLayer = false;
     for (final mark in marks) {
       if (!isPrivacyBrush(mark.tool) &&
           (mark.tool == MarkTool.pen) == penLayer) {
+        if (!hasLayer) {
+          canvas.saveLayer(bounds, Paint());
+          hasLayer = true;
+        }
         drawMark(canvas, mark);
       }
     }
-    canvas.restore();
+    if (hasLayer) canvas.restore();
   }
 }
 
@@ -656,17 +673,18 @@ Future<Uint8List> renderCapture(
   canvas.clipRect(area);
   final ownMosaic =
       mosaic == null && marks.any((m) => m.tool == MarkTool.mosaic)
-      ? await makeMosaicImage(image)
+      ? makeMosaicImage(image)
       : null;
   paintCapture(canvas, image, marks, mosaic: mosaic ?? ownMosaic);
   final picture = recorder.endRecording();
-  final output = await picture.toImage(area.width.ceil(), area.height.ceil());
-  picture.dispose();
+  ui.Image? output;
   try {
+    output = await picture.toImage(area.width.ceil(), area.height.ceil());
     return (await output.toByteData(format: ui.ImageByteFormat.png))!.buffer
         .asUint8List();
   } finally {
-    output.dispose();
+    picture.dispose();
+    output?.dispose();
     ownMosaic?.dispose();
   }
 }
@@ -706,13 +724,13 @@ class _CaptureEditorState extends State<CaptureEditor> {
   }
 
   bool translationOpen = false;
-  void closeTranslation() {
+  void closeTranslation({bool resume = false}) {
     widget.controller.translation.cancel();
     setState(() => translationOpen = false);
     updateNativeTextInput();
     focus.requestFocus();
     final channel = widget.controller.translation.activeChannel;
-    if (channel?.configured == true && channel?.isEnabled == true) {
+    if (resume && channel?.configured == true && channel?.isEnabled == true) {
       unawaited(openTranslation());
     }
   }
@@ -1161,11 +1179,7 @@ class _CaptureEditorState extends State<CaptureEditor> {
         decoded = (await codec.getNextFrame()).image;
         codec.dispose();
       }
-      final pixels = widget.clip.mode == 'color'
-          ? null
-          : await makeMosaicImage(decoded);
       if (!mounted || epoch != imageLoadEpoch) {
-        pixels?.dispose();
         decoded.dispose();
         return;
       }
@@ -1174,7 +1188,7 @@ class _CaptureEditorState extends State<CaptureEditor> {
         image?.dispose();
         mosaic?.dispose();
         image = decoded;
-        mosaic = pixels;
+        mosaic = null;
       });
       notifyCaptureFrameReady(epoch);
       if (widget.clip.mode == 'color') startColorPicker(automatic: true);
@@ -1970,6 +1984,10 @@ class _CaptureEditorState extends State<CaptureEditor> {
   }
 
   void escape() {
+    if (widget.controller.recording.remaining > 0) {
+      widget.controller.recording.cancelCountdown();
+      return;
+    }
     if (readingActive) {
       toggleTranslationReading();
       return;
@@ -2532,7 +2550,42 @@ class _CaptureEditorState extends State<CaptureEditor> {
           if (divided) separator(),
           for (final (index, child) in children.indexed) ...[
             if (index > 0) const SizedBox(width: 2),
-            child,
+            if (child is ToolButton)
+              ToolButton(
+                label: child.label,
+                icon: child.icon,
+                child: child.child,
+                title:
+                    child.title ??
+                    const {
+                      '调整选区 · V': '选区',
+                      '箭头 · Q': '箭头',
+                      '矩形 · R': '矩形',
+                      '画笔 · P': '画笔',
+                      '文字 · T': '文字',
+                      '直线 · G': '直线',
+                      '序号': '序号',
+                      '长截图': '长截图',
+                      '翻译选区文字': '翻译',
+                      '隐私画笔 · B': '隐私',
+                      '识别文字 · OCR': '识字',
+                      '扫描二维码': '扫码',
+                      '屏幕取色 · I': '取色',
+                      '标注颜色': '颜色',
+                      '撤销': '撤销',
+                      '重做': '重做',
+                      '取消 · Esc': '取消',
+                      '保存到文件': '保存',
+                      '图钉暂存 · F': '图钉',
+                      '复制到剪贴板 · Enter': '复制',
+                    }[child.label],
+                size: child.size,
+                selected: child.selected,
+                primary: child.primary,
+                onPressed: child.onPressed,
+              )
+            else
+              child,
           ],
         ],
       ),
@@ -2565,12 +2618,13 @@ class _CaptureEditorState extends State<CaptureEditor> {
         onChanged: locked ? null : onChanged,
       ),
     );
-    final inspector =
-        (readingPassages.isNotEmpty &&
-                (tool == MarkTool.select || readingActive)) ||
-            translatingImage ||
-            imageTranslationStatus != null ||
-            imageTranslationFailure != null
+    final inspector = widget.controller.recording.open
+        ? RecordingControls(recording: widget.controller.recording)
+        : (readingPassages.isNotEmpty &&
+                  (tool == MarkTool.select || readingActive)) ||
+              translatingImage ||
+              imageTranslationStatus != null ||
+              imageTranslationFailure != null
         ? ToolbarWrap(
             children: [
               TranslationLanguages(
@@ -3199,6 +3253,24 @@ class _CaptureEditorState extends State<CaptureEditor> {
             annotationButton(entry),
         ], divided: false),
         toolGroup('补充标注', [
+          if (defaultTargetPlatform == TargetPlatform.macOS)
+            ToolButton(
+              size: 28,
+              label: '录屏',
+              title: '录屏',
+              icon: Icons.videocam_outlined,
+              selected: widget.controller.recording.open,
+              onPressed: locked || region == null
+                  ? null
+                  : () {
+                      final r = widget.controller.recording;
+                      setState(() {
+                        r.region = region;
+                        r.open = !r.open;
+                      });
+                      r.changed();
+                    },
+            ),
           ToolButton(
             size: 28,
             label: '长截图',
@@ -3340,7 +3412,7 @@ class _CaptureEditorState extends State<CaptureEditor> {
       ],
     );
     final inspectorSection = StateTransition(
-      child: inspector is SizedBox
+      child: inspector is SizedBox || inspector is RecordingControls
           ? inspector
           : ToolbarInspectorSurface(
               key: ValueKey(
@@ -3385,9 +3457,8 @@ class _CaptureEditorState extends State<CaptureEditor> {
               ),
             ),
     );
-    return GlassPanel(
+    return FlatPanel(
       key: toolbarKey,
-      tintOpacity: Theme.of(context).brightness == Brightness.dark ? .90 : .92,
       padding: const EdgeInsets.fromLTRB(6, 4, 6, 5),
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -3398,7 +3469,7 @@ class _CaptureEditorState extends State<CaptureEditor> {
             colorSection,
           ],
           mainHeader,
-          mainTools,
+          if (!scanningQr && qrCodes == null && qrFailure == null) mainTools,
           if (toolbarSide != ToolbarSide.above) ...[
             inspectorSection,
             colorSection,
@@ -3520,7 +3591,21 @@ class _CaptureEditorState extends State<CaptureEditor> {
         autofocus: true,
         child: LayoutBuilder(
           builder: (context, constraints) {
-            final shownMarks = visibleMarks.toSet();
+            final shownMarks = visibleMarks;
+            final editingMark = editingTextIndex == null
+                ? null
+                : marks[editingTextIndex!];
+            final previewMarks = [
+              for (final mark in shownMarks)
+                if (!identical(mark, editingMark)) mark,
+            ];
+            final source = image;
+            if (mosaic == null &&
+                source != null &&
+                (tool == MarkTool.mosaic ||
+                    previewMarks.any((mark) => mark.tool == MarkTool.mosaic))) {
+              mosaic = makeMosaicImage(source);
+            }
             final sx = constraints.maxWidth / widget.clip.width,
                 sy = constraints.maxHeight / widget.clip.height;
             Offset point(Offset p) => Offset(
@@ -3583,20 +3668,19 @@ class _CaptureEditorState extends State<CaptureEditor> {
                 toolbarManualAnchor != null) {
               measureToolbarForOverlays();
             }
-            final displayRects = widget.clip.screens
-                .map(
-                  (r) => Rect.fromLTRB(
-                    r.left * sx,
-                    r.top * sy,
-                    r.right * sx,
-                    r.bottom * sy,
-                  ),
-                )
-                .toList();
+            Rect toViewport(Rect r) => Rect.fromLTRB(
+              r.left * sx,
+              r.top * sy,
+              r.right * sx,
+              r.bottom * sy,
+            );
+            final displayRects = widget.clip.screens.map(toViewport).toList();
+            final workAreas = widget.clip.workAreas.map(toViewport).toList();
             final currentScreen = toolbarScreen(
               screenRect ?? viewport,
               displayRects,
               viewport,
+              workAreas: workAreas,
             );
             final reservedToolbarHeight = math.min(
               currentScreen.height - 24,
@@ -3742,12 +3826,7 @@ class _CaptureEditorState extends State<CaptureEditor> {
                         child: CustomPaint(
                           painter: SelectionPainter(
                             image,
-                            [
-                              for (int i = 0; i < marks.length; i++)
-                                if (i != editingTextIndex &&
-                                    shownMarks.contains(marks[i]))
-                                  marks[i],
-                            ],
+                            previewMarks,
                             preview,
                             selected,
                             region != null && tool == MarkTool.select,
@@ -4147,7 +4226,7 @@ class _CaptureEditorState extends State<CaptureEditor> {
                           child: TranslationPanel(
                             controller: widget.controller.translation,
                             settingsInitially: true,
-                            onConfigured: closeTranslation,
+                            onConfigured: () => closeTranslation(resume: true),
                             onClose: closeTranslation,
                             openUrl: widget.controller.bridge.openServiceUrl,
                           ),
@@ -4167,7 +4246,7 @@ class _CaptureEditorState extends State<CaptureEditor> {
                     left: hintScreen.left + 16,
                     right: viewport.right - hintScreen.right + 16,
                     child: Center(
-                      child: GlassPanel(
+                      child: FlatPanel(
                         child: Wrap(
                           crossAxisAlignment: WrapCrossAlignment.center,
                           spacing: 12,
@@ -4257,6 +4336,7 @@ class _CaptureEditorState extends State<CaptureEditor> {
                           promptRect,
                           displayRects,
                           viewport,
+                          workAreas: workAreas,
                         ),
                         toolbar: measuredToolbar,
                       ),
@@ -4359,13 +4439,11 @@ class SelectionPainter extends CustomPainter {
     canvas.save();
     canvas.scale(sx, sy);
     canvas.drawImage(im, Offset.zero, Paint());
-    if (region != null) {
+    if (region != null && (marks.isNotEmpty || active != null)) {
       canvas.save();
       canvas.clipRect(region!);
-      paintCapture(canvas, im, [...marks, ?active], mosaic: mosaic);
+      _paintCaptureMarks(canvas, im, [...marks, ?active], mosaic: mosaic);
       canvas.restore();
-    } else {
-      canvas.drawImage(im, Offset.zero, Paint());
     }
     canvas.restore();
     // Editing feedback only: the exported privacy region has no outline.
@@ -4456,7 +4534,16 @@ class SelectionPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant SelectionPainter oldDelegate) => true;
+  bool shouldRepaint(covariant SelectionPainter oldDelegate) =>
+      image != oldDelegate.image ||
+      mosaic != oldDelegate.mosaic ||
+      region != oldDelegate.region ||
+      showHandles != oldDelegate.showHandles ||
+      showSelection != oldDelegate.showSelection ||
+      // Draft strokes are updated in place during a drag.
+      active != null ||
+      oldDelegate.active != null ||
+      !listEquals(marks, oldDelegate.marks);
 }
 
 /// Transient feedback stays outside the exact, immediately updated selection.

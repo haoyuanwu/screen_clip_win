@@ -2,7 +2,7 @@
 
 一款轻巧的常驻截图工具。没有主页，也不保存截图历史；框选、标注、复制，在同一个截图界面里完成。
 
-[下载 macOS Apple Silicon](https://github.com/haoyuanwu/screen_clip_win/releases/download/v1.2.0/DingGe-1.2.0-macOS-arm64.dmg) · [历史 macOS Intel 1.1.4](https://github.com/haoyuanwu/screen_clip_win/releases/download/v1.1.4/ScreenClip-1.1.4-macOS-x64.dmg) · [下载 Windows 安装版](https://github.com/haoyuanwu/screen_clip_win/releases/download/v1.1.1/ScreenClip-1.1.1-Windows-x64-Setup.exe) · [下载便携版](https://github.com/haoyuanwu/screen_clip_win/releases/download/v1.1.1/ScreenClip-1.1.1-Windows-x64-Portable.zip) · [查看发布版本](https://github.com/haoyuanwu/screen_clip_win/releases)
+[下载 macOS Apple Silicon](https://github.com/haoyuanwu/screen_clip_win/releases/download/v1.3.0/DingGe-1.3.0-macOS-arm64.dmg) · [历史 macOS Intel 1.1.4](https://github.com/haoyuanwu/screen_clip_win/releases/download/v1.1.4/ScreenClip-1.1.4-macOS-x64.dmg) · [下载 Windows 安装版](https://github.com/haoyuanwu/screen_clip_win/releases/download/v1.1.1/ScreenClip-1.1.1-Windows-x64-Setup.exe) · [下载便携版](https://github.com/haoyuanwu/screen_clip_win/releases/download/v1.1.1/ScreenClip-1.1.1-Windows-x64-Portable.zip) · [查看发布版本](https://github.com/haoyuanwu/screen_clip_win/releases)
 
 ## 截图，只需几步
 
@@ -13,6 +13,8 @@
 启动后驻留系统托盘，不弹出主页。按 **Esc** 取消截图，不改变剪贴板；需要文件时可主动保存 PNG。
 
 ## 功能
+
+- **屏幕录制（macOS）**：先框选范围，在截图选区工具栏点击「录屏」展开二级设置，支持立即开始、3／5／10 秒延迟、MP4／MOV 和 30／60／120 fps 目标帧率。首次启动时确认保存位置（默认选中桌面，可在偏好设置更改），仅录制框选区域的画面与光标，不含声音，录制控制窗口不进入视频；点击菜单栏停止按钮即可保存，并在 Finder 中定位文件。实际帧率取决于显示器与编码性能。
 
 - **长截图**：框选后开启，默认纵向，可切换横向；支持反复滚动拼接与去重、实时预览、速率警戒条和暂停位置标记。快速滚动时优先修正对齐，参考位置移出取景框或无法可靠匹配时暂停，滚回已采集区域自动恢复。连续滚动按选区尺寸刷新预览，停稳 300 毫秒补齐。取消会退出本次截图。
 
@@ -29,12 +31,12 @@
 - **完整窗口抓取**：macOS 智能选取窗口时使用 ScreenCaptureKit 独立抓取，获取被遮挡的窗口内容，并在原位置显示；无需辅助功能权限，不改变真实窗口层级。改选桌面恢复最初快照，仅需要已有的屏幕录制权限。Windows 保留临时置顶并在完成或取消后恢复。
 - **截图前完成标注**：箭头、直线、方框、自由画笔、文字与序号。
 - **二维码扫描**：使用 `flutter_zxing: ^3.1.0` 本地扫描当前选区，多个二维码分别在中心显示彩色背景箭头；点击用默认浏览器打开网页链接并退出截图，不改变剪贴板，右键可查看与复制内容，纯文本二维码直接查看。按钮不会进入导出。
-- **屏幕取色器**：全局 `Ctrl + Shift + C` 直接进入多屏桌面取色，可跨屏移动鼠标，不需要框选，也不等待截图延时；截图工具栏内按 `I` 取色。移动鼠标显示像素放大图、色块、sRGB 0–255 与 HEX，点击后固定卡片与放大图，点击数值复制；全局取色固定后回到桌面悬浮卡片，截图内取色关闭后继续编辑。实时卡片保持在鼠标所在显示器内，支持不同屏幕排列与缩放比例。
+- **屏幕取色器**：全局 `Ctrl + Shift + C` 直接进入多屏桌面取色，可跨屏移动鼠标，不需要框选，也不等待截图延时；截图工具栏内按 `I` 取色。macOS 取色时显示吸管光标，尖端对应采样像素。移动鼠标显示像素放大图、色块、sRGB 0–255 与 HEX，点击后固定卡片与放大图，点击数值复制；全局取色固定后回到桌面悬浮卡片，截图内取色关闭后继续编辑。实时卡片保持在鼠标所在显示器内，支持不同屏幕排列与缩放比例。
 - **隐私画笔**：单个图标切换模糊／马赛克，支持画笔／框选切换，默认画笔；画笔连续涂抹并调整粗细，框选拖动矩形处理整块区域。
 - **多渠道文字翻译**：从常驻工具条打开翻译，或在截图选区点击翻译并本地提取文字。支持智谱 AI、DeepSeek、通义千问、Kimi、豆包、OpenAI 与自定义兼容接口，原文可编辑、语言可切换、可取消重试及复制译文。请在“翻译渠道与 API Key”中配置自己的 Key 和已开通的模型；只有主动翻译才发送原文，不上传图片，密钥保存在系统安全存储，不保存翻译历史。
 - **OCR 文字识别**：工具栏点击「识别文字」，离线识别当前选区，识别时在选区内显示扫描动画，完成后直接在图片文字上拖动选择，支持跨行、全选与 Ctrl/⌘+C 复制；退出识别即可继续标注。使用项目内的 `packages/desktop_vision`（来自提供的 flutter-desktop-ocr），macOS 使用 Apple Vision，Windows 使用系统 OCR 语言组件。识别基于当前画面，包含标注与隐私处理，不上传图片。
 - **灵活的文字样式**：输入框随内容自动增宽，到边缘换行增高，不在文字框内部滚动；支持文字颜色、背景颜色、字号、粗体、斜体和下划线。
-- **紧凑毛玻璃工具栏**：自动调整位置，保持在单块显示器内，配合按压和状态切换动画。
+- **扁平工具栏**：实色面板带细边和阴影，自动避让菜单栏和 Dock。工具按压、选中与二级菜单切换带短动画，并遵循系统的减少动态效果设置。
 - **三种主题**：跟随系统、浅色、深色。
 - **默认复制，不保存记录**：图片仅在内存中处理，仅主动保存时写入文件。
 
@@ -94,8 +96,8 @@ flutter build windows --release
 
 Windows 安装脚本为 `packaging/windows.iss`，使用 Inno Setup 编译。分发时需包含整个 Release 目录及匹配的 Microsoft Visual C++ 运行库。
 
-在 Mac 上可执行 `flutter run -d macos` 或 `FLUTTER_MACOS_ARM64_ONLY=true flutter build macos --release`。已在 Apple Silicon 双屏环境检查截图、取色与启动流程；后续发布仅支持 Apple Silicon，使用 `tools/package_macos.sh VERSION` 打包。
+在 Mac 上可执行 `flutter run -d macos` 或 `FLUTTER_MACOS_ARM64_ONLY=true flutter build macos --release`。本地使用 `tools/package_macos.sh VERSION` 打包，每次验证通过后覆盖 `dist/DingGe-macOS-arm64.dmg` 和校验文件。正式发布使用 `tools/package_macos.sh VERSION --release` 生成带版本号的 Apple Silicon 安装包。
 
-详细说明：[产品设计](docs/product-design.md)、[设计系统](design-system/screenclip/MASTER.md)、[发布说明](docs/releases/1.0.0.md)。
+详细说明：[产品设计](docs/product-design.md)、[设计系统](design-system/screenclip/MASTER.md)、[发布说明](docs/releases/1.3.0.md)。
 
 本地中英翻译的准备、构建和双平台验收见 [Argos 本地翻译](docs/argos-local-translation.md)。

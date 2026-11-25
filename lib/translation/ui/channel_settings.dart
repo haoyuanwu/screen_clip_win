@@ -1,6 +1,7 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
+import '../../src/theme.dart';
 import '../../src/ui/controls.dart';
 import '../../src/ui/capture_mirrors.dart' show scheduleCaptureFrame;
 import '../service.dart';
@@ -81,10 +82,10 @@ class _ChannelSettingsState extends State<ChannelSettings> {
         for (final channel in c.channels)
           Padding(
             padding: const EdgeInsets.only(bottom: 10),
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                color: colors.surfaceContainerLow,
-                borderRadius: BorderRadius.circular(12),
+            child: AnimatedContainer(
+              duration: AppStyle.motion(context),
+              curve: AppStyle.motionCurve,
+              decoration: AppStyle.panel(context).copyWith(
                 border: Border.all(
                   color: channel.id == c.activeId
                       ? colors.primary

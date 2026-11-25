@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../qr_scan.dart';
+import '../theme.dart';
 import 'controls.dart';
 
 class QrOverlay extends StatelessWidget {
@@ -52,14 +53,11 @@ class QrOverlay extends StatelessWidget {
                     color: code.link != null
                         ? Theme.of(context).colorScheme.primary
                         : Theme.of(context).colorScheme.surfaceContainerHigh,
-                    borderRadius: BorderRadius.circular(10),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withValues(alpha: .18),
-                        blurRadius: 10,
-                        offset: const Offset(0, 3),
-                      ),
-                    ],
+                    borderRadius: BorderRadius.circular(AppStyle.controlRadius),
+                    boxShadow: AppStyle.shadows(
+                      Theme.of(context).colorScheme,
+                      floating: true,
+                    ),
                   ),
                   child: ToolButton(
                     key: ValueKey('qr-open-$index'),

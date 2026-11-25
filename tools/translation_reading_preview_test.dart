@@ -14,7 +14,7 @@ import 'package:screen_clip_win/src/theme.dart';
 import 'package:screen_clip_win/translation/service.dart';
 import 'package:screen_clip_win/translation/ui/reading_panel.dart';
 
-import '../test/translation_test.dart' show configured;
+import '../test/translation_test.dart' show configured, settleTranslation;
 import '../test/translation_reading_test.dart' show ReadingOcrBridge;
 
 void main() {
@@ -132,13 +132,8 @@ void main() {
             return ((x > y ? x : y) + .05) / ((x < y ? x : y) + .05);
           }
 
-          final glass = Color.alphaBlend(
-            (dark ? const Color(0xff262629) : const Color(0xfffafafa))
-                .withValues(alpha: dark ? .90 : .92),
-            dark ? Colors.white : Colors.black,
-          );
           expect(
-            contrast(theme.colorScheme.onSurface, glass),
+            contrast(theme.colorScheme.onSurface, theme.colorScheme.surface),
             greaterThanOrEqualTo(4.5),
           );
           expect(
@@ -172,10 +167,7 @@ void main() {
             await tester.pumpAndSettle();
           }
           await tester.tap(find.byTooltip('翻译选区文字'));
-          await tester.runAsync(
-            () => Future<void>.delayed(const Duration(milliseconds: 100)),
-          );
-          await tester.pumpAndSettle();
+          await settleTranslation(tester);
           if (find.byType(TranslationReadingPanel).evaluate().isEmpty) {
             await tester.tap(find.byTooltip('对照阅读'));
           }

@@ -2,23 +2,31 @@ import 'dart:math' as math;
 
 import 'package:flutter/widgets.dart';
 
-/// Pick one physical display, never the virtual desktop's surrounding rectangle.
-Rect toolbarScreen(Rect selection, List<Rect> screens, Rect viewport) {
-  final available = screens
-      .map((r) => r.intersect(viewport))
-      .where((r) => r.width > 0 && r.height > 0)
-      .toList();
-  if (available.isEmpty) return viewport;
-  var best = available.first;
+/// Pick a physical display by selection overlap, then use its work area.
+Rect toolbarScreen(
+  Rect selection,
+  List<Rect> screens,
+  Rect viewport, {
+  List<Rect> workAreas = const [],
+}) {
+  var best = viewport;
+  var bestIndex = -1;
   double bestArea = -1;
-  for (final screen in available) {
+  for (var i = 0; i < screens.length; i++) {
+    final screen = screens[i].intersect(viewport);
+    if (screen.isEmpty) continue;
     final overlap = screen.intersect(selection);
     final area = overlap.isEmpty ? 0.0 : overlap.width * overlap.height;
     if (area > bestArea ||
         (area == bestArea && screen.contains(selection.center))) {
       best = screen;
+      bestIndex = i;
       bestArea = area;
     }
+  }
+  if (bestIndex >= 0 && workAreas.length == screens.length) {
+    final workArea = best.intersect(workAreas[bestIndex]);
+    if (!workArea.isEmpty) return workArea;
   }
   return best;
 }

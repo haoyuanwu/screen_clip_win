@@ -1,4 +1,5 @@
 import Cocoa
+import AVFoundation
 import ServiceManagement
 import FlutterMacOS
 import Carbon
@@ -6,8 +7,23 @@ import ScreenCaptureKit
 import UniformTypeIdentifiers
 
 class MainFlutterWindow: NSWindow, NSWindowDelegate {
+  private var videoRecorder: ScreenVideoRecorder?
+  private var recordingURL: URL?
+  private var recordingFolderScope: URL?
+  private let recordingFolderKey = "recordingFolderBookmark"
+  private var choosingRecordingFolder = false
+  private var recordingDestination: URL?
+  private var recordingFormat = "mp4"
+  private var recordingFPS = 60
+  private var recordingRegion: CGRect?
+  private var recordingDisplay: CGDirectDisplayID?
+  private var recordingStarting = false
   private var channel: FlutterMethodChannel!
   private var statusItem: NSStatusItem?
+  private var statusMenu: NSMenu?
+  private var recordingStopping = false
+  private var recordingClock: Timer?
+  private var recordingStartedAt: TimeInterval?
   private var hotkey: EventHotKeyRef?
   private var colorHotkey: EventHotKeyRef?
   private var eventHandler: EventHandlerRef?
@@ -31,7 +47,12 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
   private var captureMirrorSession = 0
   private var captureMirrors: [CGDirectDisplayID: CaptureMirrorPanel] = [:]
   private var capturePointerMonitor: Any?
+  private var usesEyedropperCursor = false
   private var externalReturnObserver: NSObjectProtocol?
+  private var resignActiveObserver: NSObjectProtocol?
+  private var isCaptureOverlay: Bool {
+    captureDesktop != nil && captureBackground != nil && styleMask.contains(.borderless)
+  }
   private var resumeCaptureAfterExternal = false
   private var replacedInstances: [NSRunningApplication] = []
   private var debugReplacementObserver: NSObjectProtocol?
@@ -39,7 +60,7 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
   override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
     // AppKit normally keeps a window on one display. A capture surface must
     // retain the desktop union, including the area above/left of the main screen.
-    if captureDesktop != nil, styleMask.contains(.borderless), level == .screenSaver { return frameRect }
+    if captureDesktop != nil, styleMask.contains(.borderless), level == .floating { return frameRect }
     return super.constrainFrameRect(frameRect, to: screen)
   }
 
@@ -93,6 +114,15 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
         self.present("capture")
         self.channel.invokeMethod("captureWake", arguments: nil)
       }
+    resignActiveObserver = NotificationCenter.default.addObserver(
+      forName: NSApplication.didResignActiveNotification, object: nil, queue: .main
+    ) { [weak self] _ in
+      DispatchQueue.main.async {
+        guard let self, !NSApp.isActive, self.isVisible, self.isCaptureOverlay,
+          self.attachedSheet == nil else { return }
+        self.dismissCaptureOverlay()
+      }
+    }
     channel = FlutterMethodChannel(name: "screenclip/desktop", binaryMessenger: controller.engine.binaryMessenger)
     channel.setMethodCallHandler { [weak self] call, result in
       guard let self = self else { return }
@@ -144,6 +174,80 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
           self.orderOut(nil)
         }
       case "registerColorHotkey": result(self.setupColorHotkey())
+      case "prepareRecording":
+        guard self.videoRecorder == nil, !self.recordingStarting,
+          let args = call.arguments as? [String: Any], let format = args["format"] as? String,
+          ["mp4", "mov"].contains(format), let fps = args["fps"] as? Int, [30, 60, 120].contains(fps) else {
+          result(FlutterError(code: "recording", message: "录制参数无效或已有录制正在进行", details: nil)); return
+        }
+        guard let r = args["region"] as? [String: Double], let desktop = self.captureDesktop,
+          let background = self.captureBackground,
+          let x = r["x"], let y = r["y"], let w = r["width"], let h = r["height"], w >= 16, h >= 16 else {
+          result(FlutterError(code: "recording", message: "请先框选录屏范围", details: nil)); return
+        }
+        let scale = CGFloat(background.width) / desktop.frame.width
+        let region = CGRect(x: desktop.frame.minX + x / scale, y: desktop.frame.maxY - (y + h) / scale,
+          width: w / scale, height: h / scale)
+        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(region) }) else {
+          result(FlutterError(code: "recording", message: "请在同一显示器内框选录屏范围", details: nil)); return
+        }
+        self.recordingRegion = region
+        self.recordingDisplay = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
+        let prepare: (URL, Bool) -> Void = { folder, scoped in
+          self.recordingFolderScope?.stopAccessingSecurityScopedResource()
+          self.recordingFolderScope = scoped ? folder : nil
+          let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
+          let id = UUID().uuidString.prefix(8)
+          let name = "定格录屏-\(stamp)-\(id).\(format)"
+          self.recordingDestination = folder.appendingPathComponent(name)
+          self.recordingURL = FileManager.default.temporaryDirectory.appendingPathComponent(name)
+          self.recordingFormat = format
+          self.recordingFPS = fps
+          result(true)
+        }
+        if let folder = self.savedRecordingFolder(), folder.startAccessingSecurityScopedResource() {
+          prepare(folder, true)
+        } else {
+          self.chooseRecordingFolder { folder, error in
+            if let error { result(error) }
+            else if let folder { prepare(folder, folder.startAccessingSecurityScopedResource()) }
+            else { result(false) }
+          }
+        }
+      case "recordingFolder":
+        result(self.savedRecordingFolder()?.path)
+      case "ensureRecordingFolder":
+        if let folder = self.savedRecordingFolder(), folder.startAccessingSecurityScopedResource() {
+          folder.stopAccessingSecurityScopedResource()
+          result(folder.path)
+        } else {
+          self.chooseRecordingFolder { folder, error in
+            if let error { result(error) } else { result(folder?.path) }
+          }
+        }
+      case "chooseRecordingFolder":
+        self.chooseRecordingFolder { folder, error in
+          if let error { result(error) } else { result(folder?.path) }
+        }
+      case "cancelPreparedRecording":
+        if self.videoRecorder == nil && !self.recordingStarting { self.clearRecordingDestination() }
+        result(nil)
+      case "recordingStatus":
+        if let recorder = self.videoRecorder {
+          recorder.queue.async { let message = recorder.failure?.localizedDescription
+            DispatchQueue.main.async { result(message) }
+          }
+        } else { result(nil) }
+      case "startRecording": self.startVideoRecording(result: result)
+      case "stopRecording":
+        self.finishVideoRecording { path, error in
+          if let error { result(error) } else { result(path) }
+        }
+      #if DEBUG
+      case "setDemoRecordingIndicator":
+        self.updateRecordingIndicator(active: call.arguments as? Bool == true)
+        result(nil)
+      #endif
       case "present": self.present(call.arguments as? String ?? "palette"); result(nil)
       case "beginScrollCapture":
         guard let args = call.arguments as? [String: Any],
@@ -172,7 +276,7 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
           width: previewWidth, height: min(640, work.height)), display: true)
         let border = NSPanel(contentRect: region.insetBy(dx: -2, dy: -2), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         border.isOpaque = false; border.backgroundColor = .clear; border.hasShadow = false
-        border.ignoresMouseEvents = true; border.level = .screenSaver
+        border.ignoresMouseEvents = true; border.level = .floating
         border.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         let outline = ScrollCaptureOutline(frame: CGRect(origin: .zero, size: border.frame.size))
         outline.wantsLayer = true; outline.layer?.borderColor = NSColor.systemBlue.cgColor
@@ -199,6 +303,9 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
             "y": desktop.maxY - frame.maxY, "width": frame.width, "height": frame.height,
             "scale": panel.pixelScale]
         }])
+      case "setEyedropperCursor":
+        self.setEyedropperCursor(call.arguments as? Bool == true && self.isCaptureOverlay)
+        result(nil)
       case "updateCaptureMirror":
         if let args = call.arguments as? [String: Any],
            self.captureFrameReady,
@@ -344,7 +451,7 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
           result(FlutterError(code: "url", message: "服务商网址无效", details: nil)); return
         }
         if NSWorkspace.shared.open(url) {
-          if self.level == .screenSaver {
+          if self.isCaptureOverlay {
             self.resumeCaptureAfterExternal = true
             self.orderOut(nil)
             self.captureMirrors.values.forEach { $0.orderOut(nil) }
@@ -373,6 +480,107 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
     }
     orderOut(nil)
   }
+  private func savedRecordingFolder() -> URL? {
+    guard let bookmark = UserDefaults.standard.data(forKey: recordingFolderKey) else { return nil }
+    var stale = false
+    return try? URL(resolvingBookmarkData: bookmark, options: [.withSecurityScope, .withoutUI],
+                    relativeTo: nil, bookmarkDataIsStale: &stale)
+  }
+
+  private func chooseRecordingFolder(completion: @escaping (URL?, FlutterError?) -> Void) {
+    guard !choosingRecordingFolder else {
+      completion(nil, nil)
+      return
+    }
+    choosingRecordingFolder = true
+    let picker = NSOpenPanel()
+    picker.title = "选择录屏保存位置"
+    picker.message = "定格需要访问此文件夹，以便在停止录制后自动保存视频。"
+    picker.prompt = "使用此文件夹"
+    picker.canChooseDirectories = true
+    picker.canChooseFiles = false
+    picker.canCreateDirectories = true
+    picker.directoryURL = savedRecordingFolder()
+      ?? FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first?.resolvingSymlinksInPath()
+    let onResponse: (NSApplication.ModalResponse) -> Void = { response in
+      self.choosingRecordingFolder = false
+      guard response == .OK, let url = picker.url else {
+        completion(nil, nil)
+        return
+      }
+      do {
+        let bookmark = try url.bookmarkData(options: .withSecurityScope,
+                                            includingResourceValuesForKeys: nil, relativeTo: nil)
+        UserDefaults.standard.set(bookmark, forKey: self.recordingFolderKey)
+        self.channel.invokeMethod("recordingFolderChanged", arguments: url.path)
+        completion(url, nil)
+      } catch {
+        completion(nil, FlutterError(code: "recordingFolder", message: error.localizedDescription, details: nil))
+      }
+    }
+    if isVisible && attachedSheet == nil {
+      let previousLevel = level
+      level = .normal
+      captureMirrors.values.forEach { $0.orderOut(nil) }
+      picker.beginSheetModal(for: self) { response in
+        self.level = previousLevel
+        self.captureMirrors.values.forEach { $0.orderFrontRegardless() }
+        onResponse(response)
+      }
+    } else {
+      NSApp.activate(ignoringOtherApps: true)
+      picker.begin(completionHandler: onResponse)
+    }
+  }
+
+  private func clearRecordingDestination() {
+    recordingFolderScope?.stopAccessingSecurityScopedResource()
+    recordingFolderScope = nil
+    recordingURL = nil
+    recordingDestination = nil
+  }
+
+  private func startVideoRecording(result: @escaping FlutterResult) {
+    guard videoRecorder == nil, !recordingStarting, let url = recordingURL else {
+      result(FlutterError(code: "recording", message: "请先选择录制保存位置", details: nil)); return
+    }
+    recordingStarting = true
+    Task { @MainActor in
+      defer { self.recordingStarting = false }
+      do {
+        if !CGPreflightScreenCaptureAccess() { CGRequestScreenCaptureAccess() }
+        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        guard let display = content.displays.first(where: { $0.displayID == self.recordingDisplay }) else {
+          throw NSError(domain: "Recording", code: 1, userInfo: [NSLocalizedDescriptionKey: "录制显示器已断开"])
+        }
+        let apps = content.applications.filter { $0.processID == ProcessInfo.processInfo.processIdentifier }
+        let filter = SCContentFilter(display: display, excludingApplications: apps, exceptingWindows: [])
+        let config = SCStreamConfiguration()
+        let screen = NSScreen.screens.first { ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == display.displayID }
+        let scale = screen?.backingScaleFactor ?? 1
+        guard let region = self.recordingRegion, let screen else {
+          throw NSError(domain: "Recording", code: 4, userInfo: [NSLocalizedDescriptionKey: "录制选区已失效，请重新框选"])
+        }
+        config.sourceRect = CGRect(x: region.minX - screen.frame.minX, y: screen.frame.maxY - region.maxY, width: region.width, height: region.height)
+        config.width = max(2, min(3840, Int(region.width * scale)) / 2 * 2)
+        config.height = max(2, Int(Double(config.width) * region.height / region.width) / 2 * 2)
+        config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(self.recordingFPS))
+        config.queueDepth = 5; config.showsCursor = true; config.capturesAudio = false
+        let recorder = try ScreenVideoRecorder(url: url, format: self.recordingFormat, width: config.width, height: config.height, fps: self.recordingFPS)
+        let stream = SCStream(filter: filter, configuration: config, delegate: recorder)
+        recorder.stream = stream
+        try stream.addStreamOutput(recorder, type: .screen, sampleHandlerQueue: recorder.queue)
+        do { try await stream.startCapture() }
+        catch { recorder.stream = nil; throw error }
+        self.videoRecorder = recorder
+        self.updateRecordingIndicator(active: true)
+        result(nil)
+      } catch {
+        clearRecordingDestination()
+        result(FlutterError(code: "recording", message: error.localizedDescription, details: nil))
+      }
+    }
+  }
   private func present(_ panel: String) {
     if panel != "capture" { clearScrollCapture() }
     if panel != "capture" { resumeCaptureAfterExternal = false }
@@ -396,7 +604,7 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
     if panel == "capture", let screen = capturedScreen {
       animationBehavior = .none
       acceptsMouseMovedEvents = true
-      styleMask = [.borderless]; level = .screenSaver; collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
+      styleMask = [.borderless]; level = .floating; collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
       setFrame(captureDesktop?.frame ?? screen.frame, display: false)
       prepareCaptureMirrors()
       captureMirrors.values.forEach { $0.orderFrontRegardless() }
@@ -440,6 +648,7 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
     captureCover = nil
   }
   private func clearCaptureMirrors() {
+    setEyedropperCursor(false)
     resumeCaptureAfterExternal = false
     captureMirrorSession += 1
     if let monitor = capturePointerMonitor { NSEvent.removeMonitor(monitor) }
@@ -447,6 +656,14 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
     captureMirrors.values.forEach { $0.orderOut(nil) }
     captureMirrors = [:]
   }
+  private func setEyedropperCursor(_ enabled: Bool) {
+    guard usesEyedropperCursor != enabled else { return }
+    usesEyedropperCursor = enabled
+    let cursor = enabled ? EyedropperCursor.shared : nil
+    for panel in captureMirrors.values { panel.setSamplingCursor(cursor) }
+    if NSApp.isActive { (cursor ?? .arrow).set() }
+  }
+
   private func prepareCaptureMirrors() {
     guard captureMirrors.isEmpty, let desktop = captureDesktop, let image = captureBackground else { return }
     let screens = NSScreen.screens
@@ -456,6 +673,7 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
       guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber,
             let crop = image.cropping(to: desktop.pixelRect(screen.frame)) else { continue }
       let panel = CaptureMirrorPanel(screen: screen, image: crop)
+      if usesEyedropperCursor { panel.setSamplingCursor(EyedropperCursor.shared) }
       captureMirrors[number.uint32Value] = panel
     }
     if capturePointerMonitor == nil, !captureMirrors.isEmpty {
@@ -464,7 +682,12 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
         .rightMouseDragged, .otherMouseDown, .otherMouseUp, .otherMouseDragged, .scrollWheel,
         .keyDown, .keyUp, .flagsChanged]
       capturePointerMonitor = NSEvent.addLocalMonitorForEvents(matching: events) { [weak self] event in
-        guard let self, self.isVisible, self.level == .screenSaver else { return event }
+        guard let self, self.isCaptureOverlay, self.isVisible else { return event }
+        if event.type == .keyDown, event.modifierFlags.contains(.command),
+          event.charactersIgnoringModifiers?.lowercased() == "w" {
+          self.dismissCaptureOverlay()
+          return nil
+        }
         if [.keyDown, .keyUp, .flagsChanged].contains(event.type) {
           // Preserve Flutter's normal keyboard handling, then wake the backing
           // scene if the display-local panels made the engine consider it hidden.
@@ -479,6 +702,9 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
   }
   private func forwardCapturePointer(_ event: NSEvent) {
     guard let desktop = captureDesktop else { return }
+    if usesEyedropperCursor && event.type != .mouseExited {
+      EyedropperCursor.shared.set()
+    }
     let p = event.window?.convertPoint(toScreen: event.locationInWindow) ?? NSEvent.mouseLocation
     var buttons = Int(NSEvent.pressedMouseButtons)
     switch event.type {
@@ -498,7 +724,7 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
       "scrollY": event.type == .scrollWheel ? -event.scrollingDeltaY : 0])
   }
   func windowDidMove(_ notification: Notification) {
-    guard scrollCaptureRect == nil, isVisible, level == .screenSaver, styleMask.contains(.borderless),
+    guard scrollCaptureRect == nil, isVisible, level == .floating, styleMask.contains(.borderless),
           let desktop = captureDesktop, frame != desktop.frame else { return }
     // With separate display Spaces, AppKit may asynchronously add the active
     // screen's origin after orderFront, even though setFrame reported success.
@@ -522,7 +748,116 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
       if index == 4 || index == 6 { menu.addItem(.separator()) }
       let entry = NSMenuItem(title: action.0, action: action.1, keyEquivalent: ""); entry.target = self; menu.addItem(entry)
     }
-    item.menu = menu; statusItem = item
+    item.menu = menu; statusMenu = menu; statusItem = item
+  }
+  private func updateRecordingIndicator(active: Bool) {
+    guard let item = statusItem, let button = item.button else { return }
+    recordingClock?.invalidate()
+    recordingClock = nil
+    recordingStartedAt = active ? ProcessInfo.processInfo.systemUptime : nil
+    item.length = active ? NSStatusItem.variableLength : NSStatusItem.squareLength
+    let label = active ? "停止录制并保存" : "定格截图"
+    let image = NSImage(systemSymbolName: active ? "stop.circle.fill" : "crop",
+                        accessibilityDescription: label)
+    if active, let symbol = image {
+      let redIcon = NSImage(size: symbol.size, flipped: false) { rect in
+        symbol.draw(in: rect)
+        NSColor.systemRed.setFill()
+        rect.fill(using: .sourceAtop)
+        return true
+      }
+      redIcon.isTemplate = false
+      button.image = redIcon
+    } else {
+      image?.isTemplate = true
+      button.image = image
+    }
+    button.imagePosition = active ? .imageLeading : .imageOnly
+    button.title = ""
+    button.setAccessibilityLabel(label)
+    button.toolTip = active ? label : "定格 · Control + Shift + X"
+    button.target = active ? self : nil
+    button.action = active ? #selector(stopRecordingFromStatusBar) : nil
+    button.isEnabled = true
+    item.menu = active ? nil : statusMenu
+    if active {
+      updateRecordingElapsed()
+      let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+        self?.updateRecordingElapsed()
+      }
+      RunLoop.main.add(timer, forMode: .common)
+      recordingClock = timer
+    }
+  }
+
+  private func updateRecordingElapsed() {
+    guard let startedAt = recordingStartedAt, let button = statusItem?.button else { return }
+    let seconds = max(0, Int(ProcessInfo.processInfo.systemUptime - startedAt))
+    let minutes = seconds / 60
+    let elapsed = minutes >= 60
+      ? String(format: "%d:%02d:%02d", minutes / 60, minutes % 60, seconds % 60)
+      : String(format: "%02d:%02d", minutes, seconds % 60)
+    button.attributedTitle = NSAttributedString(
+      string: elapsed,
+      attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .medium),
+                   .foregroundColor: NSColor.white]
+    )
+    button.setAccessibilityLabel("停止录制并保存，已录制 \(elapsed)")
+  }
+
+  @objc private func stopRecordingFromStatusBar() {
+    #if DEBUG
+    if videoRecorder == nil {
+      channel.invokeMethod("stopDemoRecordingRequested", arguments: nil)
+      return
+    }
+    #endif
+    guard !recordingStopping else { return }
+    channel.invokeMethod("recordingWillStop", arguments: nil)
+    finishVideoRecording { [weak self] path, error in
+      var outcome: [String: String] = [:]
+      if let path { outcome["path"] = path }
+      if let error { outcome["error"] = error.message ?? "录制保存失败" }
+      self?.channel.invokeMethod("recordingDidStop", arguments: outcome)
+    }
+  }
+
+  private func finishVideoRecording(completion: @escaping (String?, FlutterError?) -> Void) {
+    guard let recorder = videoRecorder, !recordingStopping else {
+      completion(nil, FlutterError(code: "recording", message: "录制未开始或正在保存", details: nil))
+      return
+    }
+    recordingStopping = true
+    recordingClock?.invalidate()
+    recordingClock = nil
+    statusItem?.button?.isEnabled = false
+    statusItem?.button?.toolTip = "正在保存录制…"
+    Task { @MainActor in
+      var path: String?
+      var failure: FlutterError?
+      do {
+        try await recorder.finish()
+        if let destination = recordingDestination {
+          do {
+            try FileManager.default.moveItem(at: recorder.url, to: destination)
+            path = destination.path
+            NSWorkspace.shared.activateFileViewerSelecting([destination])
+          } catch {
+            // The completed video remains available if the folder becomes unwritable.
+            NSWorkspace.shared.activateFileViewerSelecting([recorder.url])
+            failure = FlutterError(code: "recording", message: "无法写入录屏目录，视频保留在：\(recorder.url.path)", details: nil)
+          }
+        }
+      } catch {
+        failure = FlutterError(code: "recording", message: error.localizedDescription, details: nil)
+      }
+      recorder.stream = nil
+      videoRecorder = nil
+      clearRecordingDestination()
+      recordingStopping = false
+      updateRecordingIndicator(active: false)
+      completion(path, failure)
+    }
   }
   private func ensureHotkeyHandler() -> Bool {
     if eventHandler != nil { return true }
@@ -624,7 +959,42 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
       } catch { self.scrollCaptureFilter = nil; result(FlutterError(code: "scroll", message: error.localizedDescription, details: nil)) }
     }
   }
+  private func captureRectPayload(_ rect: CGRect) -> [String: Double] {
+    ["x": Double(rect.minX), "y": Double(rect.minY),
+     "width": Double(rect.width), "height": Double(rect.height)]
+  }
+
+  #if DEBUG
+  private func debugCapture(_ mode: String, result: @escaping FlutterResult) {
+    guard let screen = NSScreen.main else { result(nil); return }
+    let size = screen.frame.size
+    let image = NSImage(size: size)
+    image.lockFocus()
+    NSColor(calibratedRed: 0.93, green: 0.95, blue: 0.98, alpha: 1).setFill()
+    NSRect(origin: .zero, size: size).fill()
+    let card = NSRect(x: size.width * 0.12, y: size.height * 0.18, width: size.width * 0.76, height: size.height * 0.64)
+    NSColor.white.setFill(); NSBezierPath(roundedRect: card, xRadius: 18, yRadius: 18).fill()
+    ("定格 · Debug 界面演示" as NSString).draw(at: NSPoint(x: card.minX + 32, y: card.maxY - 70), withAttributes: [.font: NSFont.systemFont(ofSize: 28, weight: .semibold), .foregroundColor: NSColor.labelColor])
+    ("拖动框选区域，再点击选区工具栏的「录屏」。\n此画面为模拟内容，不读取屏幕；真实录制请使用 Release 安装包。" as NSString).draw(in: card.insetBy(dx: 32, dy: 100), withAttributes: [.font: NSFont.systemFont(ofSize: 18), .foregroundColor: NSColor.darkGray])
+    image.unlockFocus()
+    var rect = NSRect(origin: .zero, size: size)
+    guard let cg = image.cgImage(forProposedRect: &rect, context: nil, hints: nil),
+      let bytes = NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:]) else { result(nil); return }
+    clearScrollCapture(); clearCaptureMirrors(); clearCaptureCover()
+    capturedScreen = screen; captureBackground = cg; capturePixelWidth = CGFloat(cg.width)
+    let desktop = DesktopCaptureGeometry(frames: [screen.frame], scale: CGFloat(cg.width) / size.width)
+    captureDesktop = desktop
+    captureWindows = []; captureFrameReady = false
+    result(["bytes": FlutterStandardTypedData(bytes: bytes), "windows": [],
+      "screens": [captureRectPayload(desktop.pixelRect(screen.frame))],
+      "workAreas": [captureRectPayload(desktop.pixelRect(screen.visibleFrame))]])
+  }
+  #endif
   private func capture(_ mode: String, result: @escaping FlutterResult) {
+    #if DEBUG
+    debugCapture(mode, result: result)
+    return
+    #else
     clearScrollCapture()
     guard !capturing else { result(FlutterError(code: "busy", message: "截图正在进行", details: nil)); return }
     // Request explicitly from the app after the screenshot action. Installation
@@ -641,6 +1011,7 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
         let ownWindows = content.windows.filter { $0.owningApplication?.processID == ProcessInfo.processInfo.processIdentifier }
         let ownApps = content.applications.filter { $0.processID == ProcessInfo.processInfo.processIdentifier }
         var snapshots: [(CGRect, CGImage)] = []
+        var workAreas: [CGRect] = []
         var scale: CGFloat = 1
         for screen in NSScreen.screens {
           guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber,
@@ -652,6 +1023,7 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
             : SCContentFilter(display: display, excludingApplications: ownApps, exceptingWindows: [])
           let image = try await self.snapshot(filter)
           snapshots.append((screen.frame, image))
+          workAreas.append(screen.visibleFrame)
           scale = max(scale, CGFloat(image.width) / screen.frame.width)
         }
         guard !snapshots.isEmpty else { throw NSError(domain: "ScreenClip", code: 1, userInfo: [NSLocalizedDescriptionKey: "未找到可截图的显示器"]) }
@@ -687,10 +1059,6 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
            "y": Double((window.frame.minY - desktopTop) * scale),
            "width": Double(window.frame.width * scale), "height": Double(window.frame.height * scale)]
         }
-        let screens = snapshots.map { entry -> [String: Double] in
-          let rect = desktop.pixelRect(entry.0)
-          return ["x": Double(rect.minX), "y": Double(rect.minY), "width": Double(rect.width), "height": Double(rect.height)]
-        }
         self.clearCaptureMirrors()
         self.captureDesktop = desktop
         self.capturedScreen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) ?? NSScreen.main
@@ -699,7 +1067,8 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
         // The next presentation uses a native snapshot while Flutter resumes.
         self.orderOut(nil)
         payload["windows"] = mode == "color" ? [] : windows
-        payload["screens"] = screens
+        payload["screens"] = snapshots.map { self.captureRectPayload(desktop.pixelRect($0.0)) }
+        payload["workAreas"] = workAreas.map { self.captureRectPayload(desktop.pixelRect($0)) }
         result(payload)
       } catch {
         self.capturing = false
@@ -713,6 +1082,7 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
         }
       }
     }
+    #endif
   }
   private func snapshot(_ filter: SCContentFilter) async throws -> CGImage {
     let config = SCStreamConfiguration()
@@ -721,15 +1091,37 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
     config.showsCursor = false
     return try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
   }
-  func windowShouldClose(_ sender: NSWindow) -> Bool { channel.invokeMethod("dismissed", arguments: nil); clearCaptureMirrors(); clearCaptureCover(); orderOut(nil); captureBackground = nil; return false }
+  private func dismissCaptureOverlay() {
+    clearScrollCapture()
+    clearCaptureMirrors()
+    clearCaptureCover()
+    captureFrameReady = false
+    orderOut(nil)
+    captureBackground = nil
+    level = .normal
+    channel.invokeMethod("dismissed", arguments: nil)
+  }
+  func windowShouldClose(_ sender: NSWindow) -> Bool {
+    dismissCaptureOverlay()
+    return false
+  }
   @objc private func captureColor() { request("color") }
   @objc private func captureRegion() { request("region") }
   @objc private func captureWindow() { request("window") }
   @objc private func captureScreen() { request("screen") }
   @objc private func showPalette() { open("palette") }
   @objc private func showPreferences() { open("settings") }
-  @objc private func quit() { captureBackground = nil; channel.invokeMethod("dismissed", arguments: nil); NSApp.terminate(nil) }
+  @objc private func quit() {
+    if videoRecorder != nil || recordingStarting {
+      let alert = NSAlert(); alert.messageText = "正在录屏"
+      alert.informativeText = "请点击菜单栏中的停止按钮保存录制，再退出。"
+      alert.runModal()
+      return
+    }
+    captureBackground = nil; channel.invokeMethod("dismissed", arguments: nil); NSApp.terminate(nil) }
   deinit {
+    recordingClock?.invalidate()
+    if let observer = resignActiveObserver { NotificationCenter.default.removeObserver(observer) }
     if let observer = externalReturnObserver { NotificationCenter.default.removeObserver(observer) }
     if let observer = debugReplacementObserver { DistributedNotificationCenter.default().removeObserver(observer) }
     if let colorHotkey = colorHotkey { UnregisterEventHotKey(colorHotkey) }
@@ -758,7 +1150,7 @@ private class CaptureMirrorPanel: NSPanel, NSWindowDelegate {
     super.init(contentRect: NSRect(origin: .zero, size: screen.frame.size),
       styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
     isReleasedWhenClosed = false; delegate = self; animationBehavior = .none
-    level = .screenSaver; collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
+    level = .floating; collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
     hidesOnDeactivate = false; acceptsMouseMovedEvents = true; hasShadow = false
     // Keep the underlying editor considered visible while these panels draw it.
     isOpaque = false; backgroundColor = .clear
@@ -775,6 +1167,10 @@ private class CaptureMirrorPanel: NSPanel, NSWindowDelegate {
     clearOverlay()
     picture.image = NSImage(cgImage: image, size: targetFrame.size)
   }
+  func setSamplingCursor(_ cursor: NSCursor?) {
+    picture.samplingCursor = cursor
+    invalidateCursorRects(for: picture)
+  }
   func clearOverlay() { overlay.isHidden = true; overlay.image = nil }
   func showOverlay(_ image: CGImage, rect: CGRect) {
     overlay.frame = CGRect(x: rect.minX, y: targetFrame.height - rect.maxY,
@@ -789,13 +1185,52 @@ private class CaptureMirrorPanel: NSPanel, NSWindowDelegate {
 }
 
 private class CaptureMirrorView: NSImageView {
+  var samplingCursor: NSCursor?
   override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+  override func resetCursorRects() {
+    super.resetCursorRects()
+    if let samplingCursor { addCursorRect(bounds, cursor: samplingCursor) }
+  }
   override func updateTrackingAreas() {
     trackingAreas.forEach { removeTrackingArea($0) }
     addTrackingArea(NSTrackingArea(rect: .zero,
       options: [.inVisibleRect, .activeAlways, .mouseMoved, .mouseEnteredAndExited], owner: self, userInfo: nil))
     super.updateTrackingAreas()
   }
+}
+
+@MainActor
+private enum EyedropperCursor {
+  static let shared: NSCursor = {
+    guard let symbol = NSImage(systemSymbolName: "eyedropper", accessibilityDescription: "取色"),
+          let data = symbol.tiffRepresentation,
+          let pixels = NSBitmapImageRep(data: data),
+          let outline = symbol.withSymbolConfiguration(.init(paletteColors: [.white])),
+          let fill = symbol.withSymbolConfiguration(.init(paletteColors: [.black])) else { return .crosshair }
+    // Align the hotspot with the tip of the symbol, before adding its outline.
+    var tip: NSPoint?
+    for y in (0..<pixels.pixelsHigh).reversed() {
+      if let x = (0..<pixels.pixelsWide).first(where: {
+        (pixels.colorAt(x: $0, y: y)?.alphaComponent ?? 0) > 0.5
+      }) {
+        tip = NSPoint(x: (CGFloat(x) + 0.5) * symbol.size.width / CGFloat(pixels.pixelsWide),
+          y: (CGFloat(y) + 0.5) * symbol.size.height / CGFloat(pixels.pixelsHigh))
+        break
+      }
+    }
+    guard let tip else { return .crosshair }
+    let padding = CGFloat(2)
+    let image = NSImage(size: NSSize(width: symbol.size.width + padding * 2,
+                                    height: symbol.size.height + padding * 2), flipped: false) { _ in
+      let glyph = NSRect(x: padding, y: padding, width: symbol.size.width, height: symbol.size.height)
+      for dx in -1...1 {
+        for dy in -1...1 { outline.draw(in: glyph.offsetBy(dx: CGFloat(dx), dy: CGFloat(dy))) }
+      }
+      fill.draw(in: glyph)
+      return true
+    }
+    return NSCursor(image: image, hotSpot: NSPoint(x: tip.x + padding, y: tip.y + padding))
+  }()
 }
 
 // Session-only image panels. No screenshot files or history are created.
@@ -843,7 +1278,7 @@ private class PinnedImagePanel: NSPanel, NSWindowDelegate {
 
 private class PinnedImageView: NSView {
   let image: NSImage
-  private let header = NSVisualEffectView()
+  private let header = NSView()
   private let label = NSTextField(labelWithString: "定格")
   private let copyButton = NSButton()
   private let textButton = NSButton()
@@ -862,10 +1297,10 @@ private class PinnedImageView: NSView {
     super.init(frame: frame)
     autoresizingMask = [.width, .height]
     wantsLayer = true
-    header.material = .hudWindow
-    header.blendingMode = .withinWindow
-    header.state = .active
-    header.appearance = NSAppearance(named: .vibrantDark)
+    header.wantsLayer = true
+    header.layer?.backgroundColor = NSColor(srgbRed: 0.114, green: 0.133, blue: 0.173, alpha: 1).cgColor
+    header.layer?.borderColor = NSColor.white.withAlphaComponent(0.14).cgColor
+    header.layer?.borderWidth = 1
     header.alphaValue = 0
     header.isHidden = true
     addSubview(header)
@@ -1067,5 +1502,71 @@ private class ScrollCaptureOutline: NSView {
     NSColor.black.withAlphaComponent(0.88).setFill()
     NSBezierPath(roundedRect: label, xRadius: 6, yRadius: 6).fill()
     (text as NSString).draw(in: label.insetBy(dx: 8, dy: 5), withAttributes: attributes)
+  }
+}
+
+private final class ScreenVideoRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
+  let queue = DispatchQueue(label: "screenclip.recording")
+  var stream: SCStream?
+  let writer: AVAssetWriter
+  let input: AVAssetWriterInput
+  let url: URL
+  var started = false
+  var failure: Error?
+  var firstTime = CMTime.zero
+  var startedAt = 0.0
+  var lastSample: CMSampleBuffer?
+  var lastTime = CMTime.zero
+  let fps: Int
+  init(url: URL, format: String, width: Int, height: Int, fps: Int) throws {
+    self.url = url; self.fps = fps
+    writer = try AVAssetWriter(outputURL: url, fileType: format == "mov" ? .mov : .mp4)
+    input = AVAssetWriterInput(mediaType: .video, outputSettings: [AVVideoCodecKey: AVVideoCodecType.h264,
+      AVVideoWidthKey: width, AVVideoHeightKey: height,
+      AVVideoCompressionPropertiesKey: [AVVideoAverageBitRateKey: min(80000000, width * height * max(30, fps) / 6),
+        AVVideoExpectedSourceFrameRateKey: fps]])
+    input.expectsMediaDataInRealTime = true
+    super.init()
+    guard writer.canAdd(input) else { throw NSError(domain: "Recording", code: 1, userInfo: [NSLocalizedDescriptionKey: "当前设备无法编码此分辨率"]) }
+    writer.add(input)
+  }
+  func stream(_ stream: SCStream, didStopWithError error: Error) { queue.async { self.failure = error } }
+  func stream(_ stream: SCStream, didOutputSampleBuffer sample: CMSampleBuffer, of type: SCStreamOutputType) {
+    guard type == .screen, sample.isValid, CMSampleBufferGetImageBuffer(sample) != nil,
+      let attachments = CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
+      let value = attachments.first?[.status] as? Int, value == SCFrameStatus.complete.rawValue,
+      failure == nil else { return }
+    let time = CMSampleBufferGetPresentationTimeStamp(sample)
+    if !started {
+      guard writer.startWriting() else { failure = writer.error; return }
+      writer.startSession(atSourceTime: time); firstTime = time; startedAt = ProcessInfo.processInfo.systemUptime; started = true
+    }
+    if input.isReadyForMoreMediaData {
+      if input.append(sample) { lastTime = time; lastSample = sample } else { failure = writer.error }
+    }
+  }
+  func finish() async throws {
+    try? await stream?.stopCapture()
+    try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+      queue.async {
+        guard self.started else {
+          self.writer.cancelWriting()
+          continuation.resume(throwing: self.failure ?? NSError(domain: "Recording", code: 2, userInfo: [NSLocalizedDescriptionKey: "没有采集到画面，请检查屏幕录制权限后重试"]))
+          return
+        }
+        let end = CMTimeAdd(self.firstTime, CMTime(seconds: max(0, ProcessInfo.processInfo.systemUptime - self.startedAt), preferredTimescale: 600))
+        if let sample = self.lastSample, self.input.isReadyForMoreMediaData, CMTimeCompare(end, self.lastTime) > 0 {
+          var timing = CMSampleTimingInfo(duration: CMTime(value: 1, timescale: CMTimeScale(self.fps)), presentationTimeStamp: end, decodeTimeStamp: .invalid)
+          var copy: CMSampleBuffer?
+          if CMSampleBufferCreateCopyWithNewTiming(allocator: kCFAllocatorDefault, sampleBuffer: sample, sampleTimingEntryCount: 1, sampleTimingArray: &timing, sampleBufferOut: &copy) == noErr, let copy { _ = self.input.append(copy) }
+        }
+        self.writer.endSession(atSourceTime: CMTimeAdd(end, CMTime(value: 1, timescale: CMTimeScale(self.fps))))
+        self.input.markAsFinished()
+        self.writer.finishWriting {
+          if self.writer.status == .completed { continuation.resume() }
+          else { continuation.resume(throwing: self.writer.error ?? NSError(domain: "Recording", code: 3, userInfo: [NSLocalizedDescriptionKey: "录制保存失败"])) }
+        }
+      }
+    }
   }
 }

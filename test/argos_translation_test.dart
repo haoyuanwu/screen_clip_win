@@ -43,6 +43,16 @@ class ReadyArgos extends ArgosEngine {
   }) => ArgosOperation(Future.value({'ready': true}), () {});
 }
 
+class PendingModelCheck extends ArgosEngine {
+  final result = Completer<Map<String, dynamic>>();
+  @override
+  ArgosOperation run(
+    Map<String, Object?> request, {
+    void Function(String, double?)? onProgress,
+    Duration timeout = const Duration(minutes: 3),
+  }) => ArgosOperation(result.future, () {});
+}
+
 class ProvisionArgos extends ArgosEngine {
   bool ready = false;
   @override
@@ -271,6 +281,41 @@ void main() {
       expect(saved, isTrue);
     },
   );
+
+  testWidgets('Close translation while language-pack check is pending', (
+    tester,
+  ) async {
+    final engine = PendingModelCheck();
+    final controller = TranslationController(
+      storage: MemoryChannels(),
+      service: TranslationService(argos: engine),
+    );
+    addTearDown(controller.dispose);
+    await controller.initialize();
+    controller.needsLocalModels = true;
+    var closed = false;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: TranslationPanel(
+            controller: controller,
+            onClose: () => closed = true,
+            openUrl: (_) async {},
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(controller.checkingLocalModels, isTrue);
+    expect(find.text('正在检查本地语言包…'), findsOneWidget);
+    await tester.tap(find.byTooltip('关闭翻译 · Esc'));
+    await tester.pump();
+    expect(closed, isTrue);
+    expect(controller.needsLocalModels, isFalse);
+    engine.result.complete({'ready': false});
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+  });
 
   test('Local channel requires preparation, starts enabled and never requires a key', () {
     final channel = defaultTranslationChannels().singleWhere((c) => c.isLocal);

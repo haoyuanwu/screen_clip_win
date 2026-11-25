@@ -38,6 +38,11 @@ class _ScreenClipAppState extends State<ScreenClipApp> {
       themeMode: controller.themeMode,
       theme: screenClipTheme(Brightness.light),
       darkTheme: screenClipTheme(Brightness.dark),
+      highContrastTheme: screenClipTheme(Brightness.light, highContrast: true),
+      highContrastDarkTheme: screenClipTheme(
+        Brightness.dark,
+        highContrast: true,
+      ),
       home: Workspace(controller: controller),
     ),
   );

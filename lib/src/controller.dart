@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart' show WidgetsBinding;
 
 import 'platform_bridge.dart';
+import 'recording.dart';
 import 'color_picker.dart';
 import '../translation/controller.dart';
 import 'ui/capture_mirrors.dart'
@@ -22,6 +23,7 @@ class Clip {
     this.mode = 'region',
     this.windows = const [],
     this.screens = const [],
+    this.workAreas = const [],
     this.rgbaPixels,
   });
   final Uint8List bytes;
@@ -30,6 +32,8 @@ class Clip {
   final String mode;
   // Screen rectangles use source pixels; the primary display is first.
   final List<ui.Rect> windows, screens;
+  // Same order and pixel coordinates as screens, excluding system UI.
+  final List<ui.Rect> workAreas;
 }
 
 /// One frozen screen, edited before confirmation. No capture history or files.
@@ -37,11 +41,42 @@ class ClipController extends ChangeNotifier {
   ClipController({DesktopBridge? bridge, TranslationController? translation})
     : bridge = bridge ?? DesktopBridge(),
       translation = translation ?? TranslationController();
+  late final ScreenRecording recording = ScreenRecording(
+    onExit: () async {
+      if (recording.savedPath != null) {
+        await discard();
+      } else {
+        await discard(hide: false);
+        await bridge.present('palette');
+      }
+    },
+  )..addListener(changed);
+  String? recordingFolder;
+  Future<void> changeRecordingFolder() => perform(() async {
+    final path = await bridge.chooseRecordingFolder();
+    if (path != null) recordingFolder = path;
+  }, presentOnError: false);
+
+  Future<void> _initializeRecordingFolder() async {
+    try {
+      final path = await bridge.recordingFolder(requestAccess: !kDebugMode);
+      if (path != null) {
+        recordingFolder = path;
+        changed();
+      }
+    } on PlatformException {
+      // Folder selection remains available in Preferences.
+    } on MissingPluginException {
+      // Older hosts do not provide recording-folder settings.
+    }
+  }
+
   final DesktopBridge bridge;
   final TranslationController translation;
   bool translationSettingsInitially = false;
   String _translationReturnPanel = 'palette';
   Future<void> openTranslation({bool settings = false}) async {
+    if (recording.engaged) return;
     if (panel != 'translation') {
       _translationReturnPanel = panel == 'settings' ? 'settings' : 'palette';
     }
@@ -100,7 +135,29 @@ class ClipController extends ChangeNotifier {
       if (call.method == 'captureRequested' && !busy && ready) {
         await capture(call.arguments as String? ?? 'region');
       }
+      if (call.method == 'recordingWillStop') {
+        recording.beginNativeStop();
+        return;
+      }
+      if (call.method == 'recordingFolderChanged') {
+        recordingFolder = call.arguments as String?;
+        changed();
+        return;
+      }
+      if (call.method == 'recordingDidStop') {
+        final outcome = call.arguments as Map;
+        await recording.finishStop(
+          path: outcome['path'] as String?,
+          failure: outcome['error'] as String?,
+        );
+        return;
+      }
+      if (call.method == 'stopDemoRecordingRequested' && recording.demo) {
+        await recording.stop();
+        return;
+      }
       if (call.method == 'openPanel' && !busy) {
+        if (recording.engaged) return;
         panel = clip != null
             ? 'capture'
             : call.arguments as String? ?? 'palette';
@@ -150,6 +207,9 @@ class ClipController extends ChangeNotifier {
         await settings();
       } catch (e) {
         error = '开机启动设置未完成，可在偏好设置中重试：$e';
+      }
+      if (defaultTargetPlatform == TargetPlatform.macOS) {
+        unawaited(_initializeRecordingFolder());
       }
     } catch (e) {
       error = '初始化失败：$e';
@@ -216,6 +276,7 @@ class ClipController extends ChangeNotifier {
   }) async {
     if (busy) return;
     busy = true;
+    final startingRevision = revision;
     error = null;
     changed();
     try {
@@ -226,10 +287,14 @@ class ClipController extends ChangeNotifier {
         sampledColor = null;
         panel = 'palette';
       }
-      if (presentOnError) await bridge.present(panel);
+      if (presentOnError && revision == startingRevision) {
+        await bridge.present(panel);
+      }
     } catch (e) {
       error = '操作未完成：$e';
-      if (presentOnError) await bridge.present(panel);
+      if (presentOnError && revision == startingRevision) {
+        await bridge.present(panel);
+      }
     } finally {
       busy = false;
       countdown = 0;
@@ -238,6 +303,7 @@ class ClipController extends ChangeNotifier {
   }
 
   Future<void> capture(String mode) => perform(() async {
+    if (recording.engaged) return;
     if (!ready) return;
     _cancelled = false;
     if (delay > 0 && mode != 'color') {
@@ -260,7 +326,7 @@ class ClipController extends ChangeNotifier {
     }
     final frame = await bridge.capture(mode);
     if (frame == null) return;
-    final windows = (frame['windows'] as List? ?? []).map((v) {
+    List<ui.Rect> readRects(String key) => (frame[key] as List? ?? []).map((v) {
       final r = Map<Object?, Object?>.from(v as Map);
       return ui.Rect.fromLTWH(
         (r['x'] as num).toDouble(),
@@ -269,15 +335,9 @@ class ClipController extends ChangeNotifier {
         (r['height'] as num).toDouble(),
       );
     }).toList();
-    final screens = (frame['screens'] as List? ?? []).map((v) {
-      final r = Map<Object?, Object?>.from(v as Map);
-      return ui.Rect.fromLTWH(
-        (r['x'] as num).toDouble(),
-        (r['y'] as num).toDouble(),
-        (r['width'] as num).toDouble(),
-        (r['height'] as num).toDouble(),
-      );
-    }).toList();
+    final windows = readRects('windows');
+    final screens = readRects('screens');
+    final workAreas = readRects('workAreas');
     if (mode == 'color' && frame['pixels'] is Uint8List) {
       final pixels = frame['pixels'] as Uint8List;
       final width = (frame['width'] as num).toInt();
@@ -296,6 +356,7 @@ class ClipController extends ChangeNotifier {
           mode: mode,
           windows: windows,
           screens: screens,
+          workAreas: workAreas,
           rgbaPixels: pixels,
         ),
       );
@@ -305,6 +366,7 @@ class ClipController extends ChangeNotifier {
         mode: mode,
         windows: windows,
         screens: screens,
+        workAreas: workAreas,
       );
     }
   });
@@ -336,6 +398,7 @@ class ClipController extends ChangeNotifier {
     String mode = 'region',
     List<ui.Rect> windows = const [],
     List<ui.Rect> screens = const [],
+    List<ui.Rect> workAreas = const [],
   }) async {
     final descriptor = await ui.ImmutableBuffer.fromUint8List(bytes);
     final image = await ui.ImageDescriptor.encoded(descriptor);
@@ -351,6 +414,7 @@ class ClipController extends ChangeNotifier {
           mode: mode,
           windows: windows,
           screens: screens,
+          workAreas: workAreas,
         ),
       );
     } finally {
@@ -373,6 +437,7 @@ class ClipController extends ChangeNotifier {
   }
 
   Future<void> discard({bool hide = true}) async {
+    if (recording.engaged) return;
     translation.cancel();
     resetCaptureMirrors();
     cancelCountdown();
@@ -415,6 +480,7 @@ class ClipController extends ChangeNotifier {
   }, presentOnError: presentOnError);
   @override
   void dispose() {
+    recording.dispose();
     translation.dispose();
     _disposed = true;
     _timer?.cancel();

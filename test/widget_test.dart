@@ -731,9 +731,9 @@ void main() {
         () => Future<void>.delayed(const Duration(milliseconds: 40)),
       );
       await tester.pumpAndSettle();
-      final compactToolbar = tester.getRect(find.byType(GlassPanel).last);
+      final compactToolbar = tester.getRect(find.byType(FlatPanel).last);
       expect(compactToolbar.width, lessThanOrEqualTo(620 - 24));
-      expect(compactToolbar.height, lessThan(100));
+      expect(compactToolbar.height, lessThan(160));
       for (final label in ['箭头 · Q', '文字 · T', '隐私画笔 · B', '矩形 · R']) {
         await tester.tap(find.byTooltip(label));
         await tester.pump(const Duration(milliseconds: 35));
@@ -744,7 +744,7 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.byTooltip('文字背景颜色'));
       await tester.pumpAndSettle();
-      final surface = find.byType(GlassPanel).last;
+      final surface = find.byType(FlatPanel).last;
       final rect = tester.getRect(surface);
       expect(rect.left, greaterThanOrEqualTo(0));
       expect(rect.right, lessThanOrEqualTo(620));
@@ -916,7 +916,7 @@ void main() {
           await tester.pumpAndSettle();
           await tester.tapAt(window.center);
           await tester.pumpAndSettle();
-          Rect toolbar() => tester.getRect(find.byType(GlassPanel).last);
+          Rect toolbar() => tester.getRect(find.byType(FlatPanel).last);
           void contained() {
             final r = toolbar();
             expect(r.left, greaterThanOrEqualTo(screen.left));
@@ -992,7 +992,7 @@ void main() {
     final picture = recorder.endRecording();
     final image = await picture.toImage(126, 84);
     picture.dispose();
-    final small = await makeMosaicImage(image);
+    final small = makeMosaicImage(image);
     final marks = [
       Mark(MarkTool.mosaic, Colors.white, 4, [
         const Offset(63, 15),
@@ -1091,15 +1091,6 @@ void main() {
       await tester.pumpAndSettle();
       await tester.dragFrom(const Offset(50, 70), const Offset(500, 240));
       await tester.pumpAndSettle();
-      expect(find.byTooltip('隐私画笔 · B'), findsOneWidget);
-      await tester.tap(find.byTooltip('隐私画笔 · B'));
-      await tester.pumpAndSettle();
-      expect(find.byTooltip('模糊画笔'), findsOneWidget);
-      expect(find.byTooltip('马赛克画笔'), findsOneWidget);
-      await tester.tap(find.byTooltip('马赛克画笔'));
-      await tester.pumpAndSettle();
-      await tester.dragFrom(const Offset(130, 180), const Offset(240, 0));
-      await tester.pump();
       SelectionPainter painter() =>
           tester
                   .widget<CustomPaint>(
@@ -1109,6 +1100,19 @@ void main() {
                   )
                   .painter!
               as SelectionPainter;
+      expect(painter().mosaic, isNull);
+      expect(find.byTooltip('隐私画笔 · B'), findsOneWidget);
+      await tester.tap(find.byTooltip('隐私画笔 · B'));
+      await tester.pumpAndSettle();
+      expect(find.byTooltip('模糊画笔'), findsOneWidget);
+      expect(find.byTooltip('马赛克画笔'), findsOneWidget);
+      await tester.tap(find.byTooltip('马赛克画笔'));
+      await tester.pumpAndSettle();
+      final mosaic = painter().mosaic;
+      expect(mosaic, isNotNull);
+      await tester.dragFrom(const Offset(130, 180), const Offset(240, 0));
+      await tester.pump();
+      expect(painter().mosaic, same(mosaic));
       expect(painter().marks.last.tool, MarkTool.mosaic);
       expect(painter().marks.last.points.length, greaterThan(1));
       expect(painter().marks.last.privacyInteraction, PrivacyInteraction.brush);

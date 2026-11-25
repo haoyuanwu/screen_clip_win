@@ -460,7 +460,16 @@ class DesktopBridge {
   void Request(const std::string& value) {channel->InvokeMethod("captureRequested",std::make_unique<Value>(value));}
   bool Handle(UINT message, WPARAM wparam, LPARAM lparam) {
     if(message==WM_GETMINMAXINFO && !capture_surface && !color_surface) {auto info=reinterpret_cast<MINMAXINFO*>(lparam);double dpi=GetDpiForWindow(owner)/96.0;info->ptMinTrackSize={static_cast<LONG>(440*dpi),static_cast<LONG>((translation_surface?480:310)*dpi)};return true;}
-    if(message==WM_CLOSE) {ClearScrollCapture();channel->InvokeMethod("dismissed",nullptr);ShowWindow(owner,SW_HIDE);RestoreFocusedWindow();return true;}
+    if(message==WM_CLOSE || (message==WM_ACTIVATE && LOWORD(wparam)==WA_INACTIVE &&
+        capture_surface && !scroll_capturing && IsWindowVisible(owner) &&
+        (!lparam || GetAncestor(reinterpret_cast<HWND>(lparam),GA_ROOTOWNER)!=owner))) {
+      const bool closing=message==WM_CLOSE;
+      ClearScrollCapture();capture_surface=false;color_surface=false;text_input_active=false;
+      capture_presentation_pending=false;capture_frame_ready=false;UpdateInputMode();
+      ShowWindow(owner,SW_HIDE);RestoreFocusedWindow(closing);
+      channel->InvokeMethod("dismissed",nullptr);
+      return closing;
+    }
     if(message==WM_HOTKEY && wparam==73) {Request("color");return true;}
     if(message==WM_HOTKEY && wparam==71) {Request("region");return true;}
     if(message==WM_TIMER && wparam==72 && capture_pending) {KillTimer(owner,72);capture_pending=false;BeginCapture();return true;}

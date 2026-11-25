@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/gestures.dart' show DragStartBehavior;
 
+import '../../src/theme.dart';
 import '../../src/ui/controls.dart';
 import '../../src/ui/capture_mirrors.dart' show scheduleCaptureFrame;
 
@@ -187,12 +188,8 @@ class _TranslationReadingPanelState extends State<TranslationReadingPanel> {
         const SingleActivator(LogicalKeyboardKey.arrowUp): () => step(-1),
       },
       child: Focus(
-        child: Material(
-          color: cs.surface,
-          elevation: 8,
-          shadowColor: Colors.black26,
-          borderRadius: BorderRadius.circular(14),
-          clipBehavior: Clip.antiAlias,
+        child: FlatPanel(
+          padding: EdgeInsets.zero,
           child: Column(
             children: [
               Padding(
@@ -308,10 +305,7 @@ class _TranslationReadingPanelState extends State<TranslationReadingPanel> {
                                   key: ValueKey(
                                     'translation-passage-${passage.id}',
                                   ),
-                                  duration:
-                                      MediaQuery.disableAnimationsOf(context)
-                                      ? Duration.zero
-                                      : const Duration(milliseconds: 140),
+                                  duration: AppStyle.motion(context, 140),
                                   padding: const EdgeInsets.all(12),
                                   decoration: BoxDecoration(
                                     color: passage.id == widget.activeId

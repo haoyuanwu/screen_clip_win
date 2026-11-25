@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 
 import '../controller.dart';
 import '../scroll_stitcher.dart';
+import '../theme.dart';
 import 'controls.dart';
 
 class ScrollCapture extends StatefulWidget {
@@ -200,20 +201,24 @@ class _ScrollCaptureState extends State<ScrollCapture> {
     },
     child: Focus(
       autofocus: true,
-      child: GlassPanel(
-        tintOpacity: 1,
+      child: FlatPanel(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Row(
               children: [
-                ToolButton(
-                  label: '长截图',
-                  icon: CupertinoIcons.rectangle_expand_vertical,
-                  selected: true,
+                Icon(
+                  CupertinoIcons.rectangle_expand_vertical,
+                  size: 18,
+                  color: Theme.of(context).colorScheme.primary,
                 ),
-                const SizedBox(width: 6),
-                const Expanded(child: Text('长截图')),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    '长截图',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                ),
                 ToolButton(
                   label: '取消长截图',
                   icon: CupertinoIcons.xmark,
@@ -329,7 +334,7 @@ class ScrollRateIndicator extends StatelessWidget {
         padding: const EdgeInsets.all(10),
         decoration: BoxDecoration(
           color: warning ? cs.errorContainer : cs.surfaceContainerHigh,
-          borderRadius: BorderRadius.circular(10),
+          borderRadius: BorderRadius.circular(AppStyle.controlRadius),
           border: Border.all(color: warning ? cs.error : cs.outlineVariant),
         ),
         child: Column(
@@ -372,9 +377,7 @@ class ScrollRateIndicator extends StatelessWidget {
               borderRadius: BorderRadius.circular(5),
               child: TweenAnimationBuilder<double>(
                 tween: Tween(begin: 0, end: paused ? 1 : level.clamp(0, 1)),
-                duration: MediaQuery.disableAnimationsOf(context)
-                    ? Duration.zero
-                    : const Duration(milliseconds: 180),
+                duration: AppStyle.motion(context, 180),
                 curve: Curves.easeOutCubic,
                 builder: (context, value, _) => LinearProgressIndicator(
                   minHeight: 10,

@@ -189,7 +189,7 @@ void main() {
       await tester.dragFrom(const Offset(400, 80), const Offset(300, 200));
       await tester.pumpAndSettle();
       expect(painter().region, const Rect.fromLTWH(400, 80, 300, 200));
-      final toolbar = tester.getRect(find.byType(GlassPanel).last);
+      final toolbar = tester.getRect(find.byType(FlatPanel).last);
       expect(toolbar.left, greaterThanOrEqualTo(500));
       expect(toolbar.right, lessThanOrEqualTo(1000));
       final p = painter();

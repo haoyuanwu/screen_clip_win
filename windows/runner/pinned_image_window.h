@@ -72,8 +72,6 @@ class PinnedImageWindow {
   double bar_opacity_ = 0, bar_from_ = 0, bar_target_ = 0;
   bool hovering_ = false, animate_ = true;
   std::unique_ptr<Gdiplus::Bitmap> image_;
-  std::unique_ptr<Gdiplus::Bitmap> glass_;
-  int glass_width_ = 0, glass_height_ = 0;
   std::vector<uint8_t> bytes_;
   int feedback_ = 0;
   std::string ocr_id_;
@@ -123,52 +121,6 @@ class PinnedImageWindow {
     const LONG top = std::clamp(source.top-16, work.top+8, std::max(work.top+8, work.bottom-height-8));
     return {left, top, left+width, top+height};
   }
-  // Cache a blurred sample of the image beneath the overlaid toolbar. Three
-  // separable box passes approximate a Gaussian without a desktop capture.
-  void PrepareGlass(int width, int height) {
-    if (glass_ && glass_width_ == width && glass_height_ == height) return;
-    glass_.reset();
-    const int radius = std::max(1, static_cast<int>(bar_/4));
-    const int sampleHeight = std::min(height, static_cast<int>(bar_)+radius*3);
-    auto blurred = std::make_unique<Gdiplus::Bitmap>(width, sampleHeight, PixelFormat32bppPARGB);
-    {
-      Gdiplus::Graphics graphics(blurred.get());
-      graphics.Clear(Gdiplus::Color(0,0,0,0));
-      graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
-      graphics.DrawImage(image_.get(), Gdiplus::Rect(0,0,width,height));
-    }
-    Gdiplus::BitmapData data{};
-    Gdiplus::Rect rect(0,0,width,sampleHeight);
-    if (blurred->LockBits(&rect,Gdiplus::ImageLockModeRead|Gdiplus::ImageLockModeWrite,PixelFormat32bppPARGB,&data) != Gdiplus::Ok) return;
-    std::vector<BYTE> input(static_cast<size_t>(width)*sampleHeight*4), output(input.size());
-    for (int y=0;y<sampleHeight;y++)
-      memcpy(input.data()+static_cast<size_t>(y)*width*4,static_cast<BYTE*>(data.Scan0)+y*data.Stride,static_cast<size_t>(width)*4);
-    const int kernel=radius*2+1;
-    for (int pass=0;pass<3;pass++) {
-      for (int y=0;y<sampleHeight;y++) for (int channel=0;channel<4;channel++) {
-        int sum=0;
-        auto value=[&](int x){return input[(static_cast<size_t>(y)*width+std::clamp(x,0,width-1))*4+channel];};
-        for(int x=-radius;x<=radius;x++) sum+=value(x);
-        for(int x=0;x<width;x++) {
-          output[(static_cast<size_t>(y)*width+x)*4+channel]=static_cast<BYTE>(sum/kernel);
-          sum+=value(x+radius+1)-value(x-radius);
-        }
-      }
-      for (int x=0;x<width;x++) for (int channel=0;channel<4;channel++) {
-        int sum=0;
-        auto value=[&](int y){return output[(static_cast<size_t>(std::clamp(y,0,sampleHeight-1))*width+x)*4+channel];};
-        for(int y=-radius;y<=radius;y++) sum+=value(y);
-        for(int y=0;y<sampleHeight;y++) {
-          input[(static_cast<size_t>(y)*width+x)*4+channel]=static_cast<BYTE>(sum/kernel);
-          sum+=value(y+radius+1)-value(y-radius);
-        }
-      }
-    }
-    for (int y=0;y<sampleHeight;y++)
-      memcpy(static_cast<BYTE*>(data.Scan0)+y*data.Stride,input.data()+static_cast<size_t>(y)*width*4,static_cast<size_t>(width)*4);
-    blurred->UnlockBits(&data);
-    glass_=std::move(blurred);glass_width_=width;glass_height_=height;
-  }
   void Hover(bool visible) {
     if (visible == hovering_) return;
     hovering_=visible;
@@ -204,16 +156,16 @@ class PinnedImageWindow {
           g.FillRectangle(&textHighlight,Gdiplus::RectF(static_cast<float>(glyph.x*width),static_cast<float>(glyph.y*height),static_cast<float>(glyph.width*width),static_cast<float>(glyph.height*height)));
       }
       if (bar_opacity_ > 0) {
-      PrepareGlass(width,height);
       const int headerHeight=std::min(height,static_cast<int>(bar_));
       Gdiplus::Bitmap header(width,headerHeight,PixelFormat32bppPARGB);
       {
       Gdiplus::Graphics h(&header);
       h.Clear(Gdiplus::Color(0,0,0,0));
       h.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
-      if(glass_) h.DrawImage(glass_.get(),0,0);
-      Gdiplus::SolidBrush background(Gdiplus::Color(156,24,27,34));
+      Gdiplus::SolidBrush background(Gdiplus::Color(255,29,34,44));
       h.FillRectangle(&background,0,0,width,headerHeight);
+      Gdiplus::Pen separator(Gdiplus::Color(255,59,70,89));
+      h.DrawLine(&separator,0,headerHeight-1,width,headerHeight-1);
       const float uiScale=bar_/34.0f;
       h.ScaleTransform(uiScale,uiScale);
       const int logicalWidth=static_cast<int>(width/uiScale);
@@ -260,7 +212,7 @@ class PinnedImageWindow {
     switch(msg) {
       case WM_DPICHANGED:
         self->bar_=static_cast<LONG>(34.0*HIWORD(wp)/96.0);
-        self->glass_.reset();self->Draw();return 0;
+        self->Draw();return 0;
       case WM_TIMER:
         if(wp==1) {
           double t=std::min(1.0,(GetTickCount64()-self->started_)/240.0);

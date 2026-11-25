@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -5,6 +7,8 @@ import 'package:flutter/gestures.dart' show kPrimaryMouseButton;
 import 'package:flutter/services.dart';
 
 import '../color_picker.dart';
+import '../platform_bridge.dart';
+import '../theme.dart';
 import 'controls.dart';
 
 final liveColorPreviewKey = GlobalKey(debugLabel: 'liveColorPreview');
@@ -142,8 +146,8 @@ class _ColorPreviewCardState extends State<ColorPreviewCard> {
           ),
       ],
     );
-    return GlassPanel(
-      shadow: !widget.fixed,
+    return FlatPanel(
+      floating: !widget.fixed,
       padding: const EdgeInsets.all(12),
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -151,7 +155,7 @@ class _ColorPreviewCardState extends State<ColorPreviewCard> {
         children: [
           Row(
             children: [
-              const Icon(Icons.colorize_rounded, size: 16),
+              Icon(Icons.colorize_rounded, color: cs.primary, size: 16),
               const SizedBox(width: 7),
               Expanded(
                 child: Text(
@@ -176,7 +180,7 @@ class _ColorPreviewCardState extends State<ColorPreviewCard> {
             Row(
               children: [
                 ClipRRect(
-                  borderRadius: BorderRadius.circular(9),
+                  borderRadius: BorderRadius.circular(AppStyle.controlRadius),
                   child: CustomPaint(
                     key: const ValueKey('color-pixel-magnifier'),
                     size: const Size(104, 104),
@@ -192,7 +196,9 @@ class _ColorPreviewCardState extends State<ColorPreviewCard> {
                         height: 60,
                         decoration: BoxDecoration(
                           color: widget.sample.color,
-                          borderRadius: BorderRadius.circular(9),
+                          borderRadius: BorderRadius.circular(
+                            AppStyle.controlRadius,
+                          ),
                           border: Border.all(
                             color: cs.outline.withValues(alpha: .25),
                           ),
@@ -224,7 +230,7 @@ class _ColorPreviewCardState extends State<ColorPreviewCard> {
               height: 42,
               decoration: BoxDecoration(
                 color: widget.sample.color,
-                borderRadius: BorderRadius.circular(9),
+                borderRadius: BorderRadius.circular(AppStyle.controlRadius),
                 border: Border.all(color: cs.outline.withValues(alpha: .25)),
               ),
             ),
@@ -276,7 +282,7 @@ class _ColorPreviewCardState extends State<ColorPreviewCard> {
   }
 }
 
-class ColorPickerOverlay extends StatelessWidget {
+class ColorPickerOverlay extends StatefulWidget {
   const ColorPickerOverlay({
     super.key,
     required this.picker,
@@ -288,9 +294,56 @@ class ColorPickerOverlay extends StatelessWidget {
   final VoidCallback onClose;
   final ValueChanged<SampledColor> onPicked;
   final List<Rect> screens;
+
+  @override
+  State<ColorPickerOverlay> createState() => _ColorPickerOverlayState();
+}
+
+class _ColorPickerOverlayState extends State<ColorPickerOverlay> {
+  bool usingEyedropper = false;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.picker.addListener(updateCursor);
+    updateCursor();
+  }
+
+  @override
+  void didUpdateWidget(ColorPickerOverlay oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.picker != widget.picker) {
+      oldWidget.picker.removeListener(updateCursor);
+      widget.picker.addListener(updateCursor);
+      updateCursor();
+    }
+  }
+
+  void updateCursor() =>
+      setEyedropper(Platform.isMacOS && !widget.picker.fixed);
+
+  void setEyedropper(bool enabled) {
+    if (usingEyedropper == enabled) return;
+    usingEyedropper = enabled;
+    unawaited(
+      DesktopBridge.channel
+          .invokeMethod<void>('setEyedropperCursor', enabled)
+          .catchError((Object _) {}),
+    );
+  }
+
+  @override
+  void dispose() {
+    widget.picker.removeListener(updateCursor);
+    setEyedropper(false);
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) => LayoutBuilder(
     builder: (context, constraints) {
+      final picker = widget.picker;
+      final screens = widget.screens;
       Offset source(Offset point) => Offset(
         point.dx / constraints.maxWidth * picker.pixels.width,
         point.dy / constraints.maxHeight * picker.pixels.height,
@@ -327,6 +380,8 @@ class ColorPickerOverlay extends StatelessWidget {
                 child: MouseRegion(
                   cursor: picker.fixed
                       ? SystemMouseCursors.basic
+                      : Platform.isMacOS
+                      ? MouseCursor.uncontrolled
                       : SystemMouseCursors.precise,
                   onHover: (e) => move(e.localPosition),
                   child: Listener(
@@ -340,7 +395,7 @@ class ColorPickerOverlay extends StatelessWidget {
                         }
                         picker.move(point);
                         picker.freeze();
-                        onPicked(picker.sample);
+                        widget.onPicked(picker.sample);
                       }
                     },
                     child: const SizedBox.expand(),
@@ -360,7 +415,7 @@ class ColorPickerOverlay extends StatelessWidget {
                       child: ColorPreviewCard(
                         sample: picker.sample,
                         fixed: picker.fixed,
-                        onClose: onClose,
+                        onClose: widget.onClose,
                         onResample: picker.fixed ? picker.resume : null,
                       ),
                     ),

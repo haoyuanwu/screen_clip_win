@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../theme.dart';
+
 /// One quiet status surface for the whole OCR flow; the screenshot stays clear.
 class OcrStatus extends StatelessWidget {
   const OcrStatus({
@@ -24,8 +26,8 @@ class OcrStatus extends StatelessWidget {
           constraints: const BoxConstraints(maxWidth: 300),
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
           decoration: BoxDecoration(
-            color: cs.onSurface.withValues(alpha: .045),
-            borderRadius: BorderRadius.circular(9),
+            color: attention ? cs.errorContainer : cs.surfaceContainerLow,
+            borderRadius: BorderRadius.circular(AppStyle.controlRadius),
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
@@ -33,7 +35,7 @@ class OcrStatus extends StatelessWidget {
               Icon(
                 icon,
                 size: 16,
-                color: attention ? cs.error : cs.onSurfaceVariant,
+                color: attention ? cs.onErrorContainer : cs.primary,
               ),
               const SizedBox(width: 7),
               Flexible(
@@ -42,16 +44,14 @@ class OcrStatus extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     AnimatedSwitcher(
-                      duration: MediaQuery.disableAnimationsOf(context)
-                          ? Duration.zero
-                          : const Duration(milliseconds: 140),
+                      duration: AppStyle.motion(context, 140),
                       child: Text(
                         title,
                         key: ValueKey(title),
                         style: TextStyle(
                           fontSize: 11,
                           fontWeight: FontWeight.w600,
-                          color: cs.onSurface,
+                          color: attention ? cs.onErrorContainer : cs.onSurface,
                         ),
                       ),
                     ),
@@ -61,7 +61,9 @@ class OcrStatus extends StatelessWidget {
                       style: TextStyle(
                         fontSize: 10,
                         height: 1.3,
-                        color: cs.onSurfaceVariant,
+                        color: attention
+                            ? cs.onErrorContainer
+                            : cs.onSurfaceVariant,
                       ),
                     ),
                   ],

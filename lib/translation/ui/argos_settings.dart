@@ -12,12 +12,13 @@ class ArgosSettings extends StatefulWidget {
     required this.channel,
     required this.onBack,
     this.onSaved,
+    this.onClose,
     this.onDownloadStarted,
   });
   final TranslationController controller;
   final TranslationChannel channel;
   final VoidCallback onBack;
-  final VoidCallback? onSaved, onDownloadStarted;
+  final VoidCallback? onSaved, onDownloadStarted, onClose;
   @override
   State<ArgosSettings> createState() => _ArgosSettingsState();
 }
@@ -27,7 +28,9 @@ class _ArgosSettingsState extends State<ArgosSettings> {
   @override
   void initState() {
     super.initState();
-    widget.controller.checkLocalModels();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) widget.controller.checkLocalModels();
+    });
   }
 
   void download() {
@@ -59,7 +62,7 @@ class _ArgosSettingsState extends State<ArgosSettings> {
     builder: (context, _) {
       final c = widget.controller;
       final ready = c.localModelsReady;
-      final busy = c.downloadingLocalModels || saving;
+      final busy = c.checkingLocalModels || c.downloadingLocalModels || saving;
       return ListView(
         padding: const EdgeInsets.all(16),
         children: [
@@ -71,10 +74,18 @@ class _ArgosSettingsState extends State<ArgosSettings> {
                 onPressed: widget.onBack,
               ),
               const SizedBox(width: 8),
-              Text(
-                '本地翻译 · Argos',
-                style: Theme.of(context).textTheme.titleMedium,
+              Expanded(
+                child: Text(
+                  '本地翻译 · Argos',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
               ),
+              if (widget.onClose != null)
+                ToolButton(
+                  label: '关闭翻译 · Esc',
+                  icon: CupertinoIcons.xmark,
+                  onPressed: widget.onClose,
+                ),
             ],
           ),
           const SizedBox(height: 16),
@@ -99,15 +110,16 @@ class _ArgosSettingsState extends State<ArgosSettings> {
             runSpacing: 8,
             children: [
               ToolButton(
-                label: ready ? '重新检查语言包' : '下载中英语言包',
-                icon: CupertinoIcons.arrow_down_circle,
-                onPressed: busy
-                    ? null
-                    : ready
-                    ? c.checkLocalModels
-                    : download,
-                child: Text(ready ? '重新检查' : '下载中英语言包'),
+                label: '重新检查语言包',
+                onPressed: busy ? null : c.checkLocalModels,
+                child: const Text('重新检查'),
               ),
+              if (!ready && !c.downloadingLocalModels)
+                ToolButton(
+                  label: '下载中英语言包',
+                  onPressed: busy ? null : download,
+                  child: const Text('下载中英语言包'),
+                ),
               if (c.downloadingLocalModels)
                 ToolButton(
                   label: '取消下载',

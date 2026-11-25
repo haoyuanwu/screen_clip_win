@@ -62,7 +62,8 @@ class TranslationController extends ChangeNotifier {
   bool localModelDownloadAttempted = false;
   int _modelGeneration = 0;
   ArgosOperation? _modelDownload;
-  Future<void>? _modelCheck;
+  ArgosOperation? _modelCheck;
+  bool get checkingLocalModels => _modelCheck != null;
   String activeId = 'argos_local';
   bool needsLocalModels = false;
   ArgosOperation? _localProbe;
@@ -85,17 +86,16 @@ class TranslationController extends ChangeNotifier {
     if (!_disposed) notifyListeners();
   }
 
-  Future<void> checkLocalModels() {
-    if (downloadingLocalModels || _disposed) return Future.value();
-    return _modelCheck ??= _checkLocalModels().whenComplete(
-      () => _modelCheck = null,
-    );
-  }
-
-  Future<void> _checkLocalModels() async {
+  Future<void> checkLocalModels() async {
+    if (checkingLocalModels || downloadingLocalModels || _disposed) return;
     final generation = _modelGeneration;
+    final job = _modelCheck = service.argos.run({
+      'command': 'status',
+    }, timeout: const Duration(seconds: 15));
+    localModelStatus = '正在检查本地语言包…';
+    changed();
     try {
-      final state = await service.argos.run({'command': 'status'}).future;
+      final state = await job.future;
       if (_disposed ||
           downloadingLocalModels ||
           generation != _modelGeneration) {
@@ -115,13 +115,17 @@ class TranslationController extends ChangeNotifier {
           generation == _modelGeneration) {
         localModelStatus = '无法检查本地语言包，请重试';
       }
+    } finally {
+      if (identical(_modelCheck, job)) _modelCheck = null;
+      changed();
     }
-    changed();
   }
 
   Future<void> downloadLocalModels() async {
     if (downloadingLocalModels || _disposed) return;
     _modelGeneration++;
+    _modelCheck?.cancel();
+    _modelCheck = null;
     localModelDownloadAttempted = true;
     downloadingLocalModels = true;
     localModelStatus = '正在准备中英语言包，可在后台继续下载';
@@ -419,6 +423,7 @@ class TranslationController extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    _modelCheck?.cancel();
     _modelDownload?.cancel();
     service.dispose();
     cancel(notify: false);
